@@ -75,10 +75,23 @@ class LLMClient:
     # How long (seconds) before a rate-exhausted model is retried.
     _EXHAUSTION_COOLDOWN_S: float = 300.0   # 5 minutes
 
-    def __init__(self, provider_name: str = "Groq", api_key: str = "", azure_endpoint: str = ""):
+    def __init__(
+        self,
+        provider_name: str = "Groq",
+        api_key: str = "",
+        azure_endpoint: str = "",
+        aws_access_key_id: str = "",
+        aws_secret_access_key: str = "",
+        aws_region: str = "",
+        bedrock_model_id: str = "",
+    ):
         self.provider_name = provider_name
         self.api_key = resolve_api_key(provider_name, api_key)
         self.azure_endpoint = azure_endpoint.strip()
+        self.aws_access_key_id = aws_access_key_id.strip()
+        self.aws_secret_access_key = aws_secret_access_key.strip()
+        self.aws_region = aws_region.strip() or "us-east-1"
+        self.bedrock_model_id = bedrock_model_id.strip()
         if provider_name not in LLM_PROVIDERS:
             print(f"[LLMClient] WARNING: Unknown provider '{provider_name}', falling back to Groq. "
                   f"Known providers: {list(LLM_PROVIDERS.keys())}")
@@ -105,6 +118,9 @@ class LLMClient:
                                           "large" if len(prompt) > 2000 else "normal")
 
         primary_model = get_model(self.provider_name, task)
+        # User-specified Bedrock model overrides the provider default
+        if self.bedrock_model_id and self.provider_name == "AWS Bedrock":
+            primary_model = f"bedrock/{self.bedrock_model_id}"
 
         candidates = [primary_model]
 
@@ -229,6 +245,15 @@ class LLMClient:
             kwargs["api_key"] = self.api_key if "groq" in self.provider_name.lower() else os.environ.get("GROQ_API_KEY", "")
         elif prefix == "gemini":
             kwargs["api_key"] = self.api_key if "gemini" in self.provider_name.lower() else os.environ.get("GEMINI_API_KEY", "")
+        elif prefix == "bedrock":
+            aws_key    = self.aws_access_key_id    or os.environ.get("AWS_ACCESS_KEY_ID", "")
+            aws_secret = self.aws_secret_access_key or os.environ.get("AWS_SECRET_ACCESS_KEY", "")
+            aws_region = self.aws_region            or os.environ.get("AWS_DEFAULT_REGION", "us-east-1")
+            if aws_key:
+                kwargs["aws_access_key_id"] = aws_key
+            if aws_secret:
+                kwargs["aws_secret_access_key"] = aws_secret
+            kwargs["aws_region_name"] = aws_region
 
         response = await asyncio.wait_for(litellm.acompletion(**kwargs), timeout=45)
         return response.choices[0].message.content or ""

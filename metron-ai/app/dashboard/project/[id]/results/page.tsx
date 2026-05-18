@@ -9,30 +9,41 @@ const API = "";
 // ── Metric display name mapping ───────────────────────────────────────────────
 const METRIC_LABELS: Record<string, string> = {
   // Functional
-  hallucination:          "Hallucination",
-  answer_relevancy:       "Answer Relevancy",
-  usefulness:             "Usefulness",
-  llm_judge:              "LLM Judge",
+  hallucination:                "Hallucination",
+  answer_relevancy:             "Answer Relevancy",
+  usefulness:                   "Usefulness",
+  llm_judge:                    "LLM Judge",
+  // Functional — per-turn LLM judge criteria
+  llm_relevance:                "LLM Relevance",
+  llm_accuracy:                 "LLM Accuracy",
+  llm_helpfulness:              "LLM Helpfulness",
+  llm_completeness:             "LLM Completeness",
+  llm_answer_similarity:        "LLM Answer Similarity",
+  // Functional — cross-turn evaluation
+  cross_turn_consistency:       "Cross-Turn Consistency",
+  cross_turn_context_awareness: "Cross-Turn Context Awareness",
+  // Functional — GEval
+  factual_accuracy:             "Factual Accuracy",
   // Security
-  pii_leakage:            "PII Leakage",
-  toxicity:               "Toxicity (Output)",
-  prompt_injection:       "Prompt Injection",
-  bias_fairness:          "Bias & Fairness",
-  toxic_request:          "Toxic Request",
-  attack_resistance:      "Attack Resistance",
+  pii_leakage:                  "PII Leakage",
+  toxicity:                     "Toxicity (Output)",
+  prompt_injection:             "Prompt Injection",
+  bias_fairness:                "Bias & Fairness",
+  toxic_request:                "Toxic Request",
+  attack_resistance:            "Attack Resistance",
   // Quality
-  geval_overall:          "GEval Overall",
-  ragas_faithfulness:     "Faithfulness (RAGAS)",
-  ragas_answer_relevancy: "Answer Relevancy (RAGAS)",
-  ragas_context_recall:   "Context Recall (RAGAS)",
-  ragas_context_precision:"Context Precision (RAGAS)",
+  geval_overall:                "GEval Overall",
+  ragas_faithfulness:           "Faithfulness (RAGAS)",
+  ragas_answer_relevancy:       "Answer Relevancy (RAGAS)",
+  ragas_context_recall:         "Context Recall (RAGAS)",
+  ragas_context_precision:      "Context Precision (RAGAS)",
   // RAG evaluation — RAGAS
-  rag_faithfulness:       "Faithfulness (RAGAS)",
-  rag_context_recall:     "Context Recall (RAGAS)",
-  rag_context_precision:  "Context Precision (RAGAS)",
+  rag_faithfulness:             "Faithfulness (RAGAS)",
+  rag_context_recall:           "Context Recall (RAGAS)",
+  rag_context_precision:        "Context Precision (RAGAS)",
   // RAG evaluation — DeepEval
-  rag_answer_relevancy:   "Answer Relevancy (DeepEval)",
-  rag_context_relevancy:  "Context Relevancy (DeepEval)",
+  rag_answer_relevancy:         "Answer Relevancy (DeepEval)",
+  rag_context_relevancy:        "Context Relevancy (DeepEval)",
 };
 
 function metricLabel(name: string): string {
@@ -71,8 +82,10 @@ interface PhaseSummary {
   total: number;
   passed: number;
   failed: number;
+  skipped?: number;
   pass_rate: number;
   avg_score: number;
+  evaluation_warnings?: string[];
   results: TestResult[];
 }
 
@@ -154,6 +167,8 @@ interface FullResults {
   failure_drill_down: TestResult[];
   total_tests: number;
   total_passed: number;
+  total_skipped?: number;
+  evaluation_warnings?: string[];
   report_html?: string;
 }
 
@@ -207,15 +222,16 @@ function applyManualPass(
 
   const weights      = getWeights(prev.domain);
   const totalWeight  = Object.values(weights).reduce((a, b) => a + b, 0);
-  const funcAvg      = phase === "functional" ? newAvgScore : prev.functional?.avg_score ?? 0;
-  const secAvg       = phase === "security"   ? newAvgScore : prev.security?.avg_score  ?? 0;
-  const qualAvg      = phase === "quality"    ? newAvgScore : prev.quality?.avg_score   ?? 0;
-  const oldContrib   = (prev.functional?.avg_score ?? 0) * (weights.functional ?? 0)
-                     + (prev.security?.avg_score   ?? 0) * (weights.security   ?? 0)
-                     + (prev.quality?.avg_score    ?? 0) * (weights.quality    ?? 0);
+  // pass_rate is stored as 0-100 in frontend; backend health uses 0-1 scale
+  const funcPR       = phase === "functional" ? newPassRate / 100 : (prev.functional?.pass_rate ?? 0) / 100;
+  const secPR        = phase === "security"   ? newPassRate / 100 : (prev.security?.pass_rate  ?? 0) / 100;
+  const qualPR       = phase === "quality"    ? newPassRate / 100 : (prev.quality?.pass_rate   ?? 0) / 100;
+  const oldContrib   = (prev.functional?.pass_rate ?? 0) / 100 * (weights.functional ?? 0)
+                     + (prev.security?.pass_rate   ?? 0) / 100 * (weights.security   ?? 0)
+                     + (prev.quality?.pass_rate    ?? 0) / 100 * (weights.quality    ?? 0);
   const perfLoad     = prev.health_score * totalWeight - oldContrib;
   const newHealth    = Math.min(1, Math.max(0,
-    (funcAvg * (weights.functional ?? 0) + secAvg * (weights.security ?? 0) + qualAvg * (weights.quality ?? 0) + perfLoad) / totalWeight
+    (funcPR * (weights.functional ?? 0) + secPR * (weights.security ?? 0) + qualPR * (weights.quality ?? 0) + perfLoad) / totalWeight
   ));
 
   const allResults = [
@@ -254,15 +270,16 @@ function applyManualRevert(
 
   const weights     = getWeights(prev.domain);
   const totalWeight = Object.values(weights).reduce((a, b) => a + b, 0);
-  const funcAvg     = phase === "functional" ? newAvgScore : prev.functional?.avg_score ?? 0;
-  const secAvg      = phase === "security"   ? newAvgScore : prev.security?.avg_score  ?? 0;
-  const qualAvg     = phase === "quality"    ? newAvgScore : prev.quality?.avg_score   ?? 0;
-  const oldContrib  = (prev.functional?.avg_score ?? 0) * (weights.functional ?? 0)
-                    + (prev.security?.avg_score   ?? 0) * (weights.security   ?? 0)
-                    + (prev.quality?.avg_score    ?? 0) * (weights.quality    ?? 0);
+  // pass_rate is stored as 0-100 in frontend; backend health uses 0-1 scale
+  const funcPR      = phase === "functional" ? newPassRate / 100 : (prev.functional?.pass_rate ?? 0) / 100;
+  const secPR       = phase === "security"   ? newPassRate / 100 : (prev.security?.pass_rate  ?? 0) / 100;
+  const qualPR      = phase === "quality"    ? newPassRate / 100 : (prev.quality?.pass_rate   ?? 0) / 100;
+  const oldContrib  = (prev.functional?.pass_rate ?? 0) / 100 * (weights.functional ?? 0)
+                    + (prev.security?.pass_rate   ?? 0) / 100 * (weights.security   ?? 0)
+                    + (prev.quality?.pass_rate    ?? 0) / 100 * (weights.quality    ?? 0);
   const perfLoad    = prev.health_score * totalWeight - oldContrib;
   const newHealth   = Math.min(1, Math.max(0,
-    (funcAvg * (weights.functional ?? 0) + secAvg * (weights.security ?? 0) + qualAvg * (weights.quality ?? 0) + perfLoad) / totalWeight
+    (funcPR * (weights.functional ?? 0) + secPR * (weights.security ?? 0) + qualPR * (weights.quality ?? 0) + perfLoad) / totalWeight
   ));
 
   const allResults = [
@@ -716,9 +733,20 @@ function FunctionalTab({
           { label: "Total Tests", value: data.total },
           { label: "Passed", value: data.passed, color: "text-secondary" },
           { label: "Failed", value: data.failed, color: "text-error" },
-          { label: "Avg Score", value: `${(data.avg_score * 100).toFixed(1)}%` },
+          { label: "Skipped", value: data.skipped ?? 0, color: (data.skipped ?? 0) > 0 ? "text-[#855300]" : undefined },
         ]}
       />
+
+      {(data.evaluation_warnings?.length ?? 0) > 0 && (
+        <div className="space-y-2">
+          {data.evaluation_warnings!.map((w, i) => (
+            <div key={i} className="flex items-start gap-2 p-3 rounded-xl border border-[#855300]/30 bg-[#855300]/5">
+              <span className="material-symbols-outlined text-base text-[#855300] flex-shrink-0 mt-0.5">warning</span>
+              <p className="text-xs text-[#855300] leading-relaxed">{w}</p>
+            </div>
+          ))}
+        </div>
+      )}
 
       {Object.entries(byCategory).map(([cat, results]) => {
         const catPassed = results.filter((r) => r.passed).length;
@@ -829,10 +857,22 @@ function SecurityTab({ data, onManualPass, onManualRevert }: { data: PhaseSummar
           <p className="font-semibold">Security Score</p>
           <p className="text-xs text-[var(--color-on-surface-variant)] opacity-60">
             {data.passed}/{data.total} checks passed
+            {(data.skipped ?? 0) > 0 && ` · ${data.skipped} skipped`}
             {secScore >= 90 ? " — Excellent" : secScore >= 70 ? " — Acceptable" : " — Needs Improvement"}
           </p>
         </div>
       </div>
+
+      {(data.evaluation_warnings?.length ?? 0) > 0 && (
+        <div className="space-y-2">
+          {data.evaluation_warnings!.map((w, i) => (
+            <div key={i} className="flex items-start gap-2 p-3 rounded-xl border border-[#855300]/30 bg-[#855300]/5">
+              <span className="material-symbols-outlined text-base text-[#855300] flex-shrink-0 mt-0.5">warning</span>
+              <p className="text-xs text-[#855300] leading-relaxed">{w}</p>
+            </div>
+          ))}
+        </div>
+      )}
 
       {sortedEntries.map(([cat, results]) => {
         const passed = results.filter((r) => r.passed).length;
@@ -936,9 +976,20 @@ function QualityTab({ data, onManualPass, onManualRevert }: { data: PhaseSummary
           { label: "Total", value: data.total },
           { label: "Passed", value: data.passed, color: "text-secondary" },
           { label: "Failed", value: data.failed, color: "text-error" },
-          { label: "Avg Score", value: `${(data.avg_score * 100).toFixed(1)}%` },
+          { label: "Skipped", value: data.skipped ?? 0, color: (data.skipped ?? 0) > 0 ? "text-[#855300]" : undefined },
         ]}
       />
+
+      {(data.evaluation_warnings?.length ?? 0) > 0 && (
+        <div className="space-y-2">
+          {data.evaluation_warnings!.map((w, i) => (
+            <div key={i} className="flex items-start gap-2 p-3 rounded-xl border border-[#855300]/30 bg-[#855300]/5">
+              <span className="material-symbols-outlined text-base text-[#855300] flex-shrink-0 mt-0.5">warning</span>
+              <p className="text-xs text-[#855300] leading-relaxed">{w}</p>
+            </div>
+          ))}
+        </div>
+      )}
 
       {data.results.map((r) => (
         <div key={r.test_id} className="border border-[var(--color-outline-variant)] rounded-xl overflow-hidden">

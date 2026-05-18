@@ -1,0 +1,969 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>METRON – Technical Documentation</title>
+  <style>
+    /* ── Reset & base ───────────────────────────────────────────────────── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: 'Segoe UI', Arial, sans-serif;
+      font-size: 14px;
+      line-height: 1.7;
+      color: #1a1a2e;
+      background: #ffffff;
+    }
+
+    /* ── Print / PDF ────────────────────────────────────────────────────── */
+    @media print {
+      .no-print { display: none !important; }
+      body { font-size: 12px; color: #000; }
+      .page-break { page-break-before: always; }
+      a { color: inherit; text-decoration: none; }
+      .cover { page-break-after: always; }
+    }
+
+    /* ── Layout ─────────────────────────────────────────────────────────── */
+    .container { max-width: 900px; margin: 0 auto; padding: 40px 48px; }
+
+    /* ── Cover page ─────────────────────────────────────────────────────── */
+    .cover {
+      min-height: 96vh;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      align-items: flex-start;
+      background: linear-gradient(135deg, #0f0c29 0%, #302b63 50%, #24243e 100%);
+      color: #fff;
+      padding: 80px 80px;
+      border-radius: 0;
+    }
+    .cover .badge {
+      font-size: 11px;
+      letter-spacing: 3px;
+      text-transform: uppercase;
+      color: #a78bfa;
+      margin-bottom: 20px;
+    }
+    .cover h1 {
+      font-size: 56px;
+      font-weight: 800;
+      letter-spacing: -1px;
+      line-height: 1.1;
+      margin-bottom: 16px;
+      background: linear-gradient(90deg, #a78bfa, #60a5fa);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+    .cover .subtitle {
+      font-size: 22px;
+      color: #cbd5e1;
+      margin-bottom: 40px;
+      max-width: 600px;
+    }
+    .cover .meta { font-size: 13px; color: #94a3b8; margin-top: 60px; }
+    .cover .meta span { margin-right: 40px; }
+
+    /* ── TOC ────────────────────────────────────────────────────────────── */
+    .toc { background: #f8faff; border-left: 4px solid #7c3aed; padding: 28px 36px; margin-bottom: 48px; border-radius: 0 8px 8px 0; }
+    .toc h2 { font-size: 16px; font-weight: 700; color: #7c3aed; margin-bottom: 16px; letter-spacing: 1px; text-transform: uppercase; }
+    .toc ol { padding-left: 20px; }
+    .toc li { margin: 6px 0; }
+    .toc a { color: #1e3a5f; text-decoration: none; font-size: 13.5px; }
+    .toc a:hover { color: #7c3aed; }
+    .toc .sub { padding-left: 20px; list-style-type: lower-alpha; }
+
+    /* ── Section headings ───────────────────────────────────────────────── */
+    h1.section { font-size: 30px; font-weight: 800; color: #0f172a; margin: 56px 0 20px; padding-bottom: 10px; border-bottom: 3px solid #7c3aed; }
+    h2.section { font-size: 21px; font-weight: 700; color: #1e3a5f; margin: 36px 0 14px; }
+    h3.section { font-size: 16px; font-weight: 700; color: #334155; margin: 24px 0 10px; }
+
+    /* ── Body text ──────────────────────────────────────────────────────── */
+    p { margin-bottom: 14px; color: #334155; }
+    ul, ol { padding-left: 22px; margin-bottom: 14px; color: #334155; }
+    li { margin-bottom: 5px; }
+    strong { color: #1e3a5f; }
+
+    /* ── Info boxes ─────────────────────────────────────────────────────── */
+    .box { padding: 18px 22px; border-radius: 8px; margin: 20px 0; }
+    .box-purple { background: #ede9fe; border-left: 4px solid #7c3aed; }
+    .box-blue   { background: #eff6ff; border-left: 4px solid #3b82f6; }
+    .box-green  { background: #f0fdf4; border-left: 4px solid #22c55e; }
+    .box-red    { background: #fff1f2; border-left: 4px solid #f43f5e; }
+    .box-yellow { background: #fffbeb; border-left: 4px solid #f59e0b; }
+
+    /* ── Tables ─────────────────────────────────────────────────────────── */
+    table { width: 100%; border-collapse: collapse; margin: 20px 0; font-size: 13px; }
+    thead th { background: #1e3a5f; color: #fff; text-align: left; padding: 10px 14px; font-weight: 600; }
+    tbody tr:nth-child(even) { background: #f8faff; }
+    tbody tr:nth-child(odd)  { background: #ffffff; }
+    td, th { padding: 9px 14px; border-bottom: 1px solid #e2e8f0; vertical-align: top; }
+
+    /* ── Code ───────────────────────────────────────────────────────────── */
+    code { background: #f1f5f9; color: #7c3aed; padding: 2px 7px; border-radius: 4px; font-family: 'Consolas', 'Courier New', monospace; font-size: 12.5px; }
+    pre  { background: #0f172a; color: #e2e8f0; padding: 18px 22px; border-radius: 8px; font-size: 12px; overflow-x: auto; margin: 16px 0; line-height: 1.6; }
+    pre code { background: none; color: inherit; padding: 0; }
+
+    /* ── Stage cards ────────────────────────────────────────────────────── */
+    .stage-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin: 24px 0; }
+    .stage-card {
+      border: 1px solid #e2e8f0;
+      border-radius: 10px;
+      padding: 18px 20px;
+      background: #fafbff;
+      transition: border-color 0.2s;
+    }
+    .stage-card .stage-num {
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 2px;
+      text-transform: uppercase;
+      color: #7c3aed;
+      margin-bottom: 4px;
+    }
+    .stage-card .stage-title { font-size: 15px; font-weight: 700; color: #0f172a; margin-bottom: 8px; }
+    .stage-card p { font-size: 13px; margin: 0; }
+
+    /* ── Metric cards ───────────────────────────────────────────────────── */
+    .metric-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin: 20px 0; }
+    .metric-card { border-radius: 8px; padding: 16px 18px; text-align: center; }
+    .metric-card .label { font-size: 11px; font-weight: 700; letter-spacing: 1px; text-transform: uppercase; margin-bottom: 6px; }
+    .metric-card .value { font-size: 22px; font-weight: 800; }
+    .mc-purple { background: #ede9fe; color: #7c3aed; }
+    .mc-blue   { background: #dbeafe; color: #1d4ed8; }
+    .mc-green  { background: #dcfce7; color: #15803d; }
+    .mc-red    { background: #ffe4e6; color: #be123c; }
+    .mc-yellow { background: #fef9c3; color: #854d0e; }
+    .mc-slate  { background: #f1f5f9; color: #334155; }
+
+    /* ── Flow diagram ───────────────────────────────────────────────────── */
+    .flow {
+      display: flex;
+      align-items: flex-start;
+      gap: 0;
+      margin: 28px 0;
+      overflow-x: auto;
+      padding-bottom: 8px;
+    }
+    .flow-step {
+      flex: 1;
+      min-width: 90px;
+      text-align: center;
+      position: relative;
+    }
+    .flow-step:not(:last-child)::after {
+      content: '→';
+      position: absolute;
+      right: -10px;
+      top: 20px;
+      font-size: 18px;
+      color: #94a3b8;
+    }
+    .flow-box {
+      background: #7c3aed;
+      color: #fff;
+      border-radius: 8px;
+      padding: 10px 8px;
+      font-size: 11px;
+      font-weight: 700;
+      line-height: 1.3;
+      margin: 0 12px 8px;
+    }
+    .flow-label { font-size: 10px; color: #64748b; }
+
+    /* ── Divider ────────────────────────────────────────────────────────── */
+    hr { border: none; border-top: 1px solid #e2e8f0; margin: 40px 0; }
+
+    /* ── Print button ───────────────────────────────────────────────────── */
+    .print-btn {
+      position: fixed;
+      top: 24px;
+      right: 24px;
+      background: #7c3aed;
+      color: #fff;
+      border: none;
+      padding: 10px 22px;
+      border-radius: 6px;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      box-shadow: 0 4px 12px rgba(124,58,237,0.35);
+      z-index: 100;
+    }
+    .print-btn:hover { background: #6d28d9; }
+
+    /* ── Numbered section separator ─────────────────────────────────────── */
+    .sec-number {
+      display: inline-block;
+      background: #7c3aed;
+      color: #fff;
+      border-radius: 50%;
+      width: 32px;
+      height: 32px;
+      line-height: 32px;
+      text-align: center;
+      font-weight: 700;
+      font-size: 15px;
+      margin-right: 10px;
+      vertical-align: middle;
+    }
+  </style>
+</head>
+<body>
+
+<button class="print-btn no-print" onclick="window.print()">Download / Print PDF</button>
+
+<!-- ═══════════════════════════════════════════════════════════════════════
+     COVER PAGE
+═══════════════════════════════════════════════════════════════════════ -->
+<div class="cover">
+  <div class="badge">Technical Documentation — v2.0</div>
+  <h1>METRON</h1>
+  <div class="subtitle">AI Application Testing &amp; Evaluation Platform<br>End-to-End Quality, Security &amp; Performance Testing for AI Agents</div>
+
+  <div class="meta">
+    <span>Date: May 2026</span>
+    <span>Version: 2.0.0</span>
+    <span>Classification: Internal / Technical</span>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════════
+     MAIN DOCUMENT
+═══════════════════════════════════════════════════════════════════════ -->
+<div class="container">
+
+  <!-- TABLE OF CONTENTS -->
+  <div class="toc">
+    <h2>Table of Contents</h2>
+    <ol>
+      <li><a href="#overview">System Overview</a></li>
+      <li><a href="#architecture">System Architecture</a>
+        <ol class="sub">
+          <li><a href="#frontend">Frontend (metron-ai)</a></li>
+          <li><a href="#backend">Backend (metron-unified)</a></li>
+          <li><a href="#dataflow">Data Flow</a></li>
+        </ol>
+      </li>
+      <li><a href="#pipeline">The 8-Stage Testing Pipeline</a>
+        <ol class="sub">
+          <li><a href="#s0">Stage 0 – Application Profiling</a></li>
+          <li><a href="#s1">Stage 1 – Persona Generation</a></li>
+          <li><a href="#s2">Stage 2 – Test Generation</a></li>
+          <li><a href="#s3">Stage 3 – Conversation Execution</a></li>
+          <li><a href="#s4">Stage 4 – Evaluation</a></li>
+          <li><a href="#s5">Stage 5 – Aggregation</a></li>
+          <li><a href="#s6">Stage 6 – Feedback Loop</a></li>
+          <li><a href="#s7">Stage 7 – Report Generation</a></li>
+          <li><a href="#s8">Stage 8 – Root Cause Analysis (RCA)</a></li>
+        </ol>
+      </li>
+      <li><a href="#testing">What METRON Tests</a>
+        <ol class="sub">
+          <li><a href="#functional">Functional Testing</a></li>
+          <li><a href="#security">Security Testing</a></li>
+          <li><a href="#quality">Quality Testing</a></li>
+          <li><a href="#performance">Performance Testing</a></li>
+          <li><a href="#load">Load Testing</a></li>
+          <li><a href="#rag">RAG Evaluation</a></li>
+        </ol>
+      </li>
+      <li><a href="#apptypes">Supported Application Types</a></li>
+      <li><a href="#llm">LLM Provider Support</a></li>
+      <li><a href="#scoring">Health Score &amp; Scoring Model</a></li>
+      <li><a href="#api">API Reference</a></li>
+      <li><a href="#security-arch">Security Architecture</a></li>
+      <li><a href="#setup">Setup &amp; Configuration</a></li>
+      <li><a href="#glossary">Glossary</a></li>
+    </ol>
+  </div>
+
+  <!-- ──────────────────────────────────────────────────────────────────── -->
+  <h1 class="section" id="overview"><span class="sec-number">1</span>System Overview</h1>
+
+  <p>
+    <strong>METRON</strong> is an AI application testing and evaluation platform. It automatically tests AI agents, chatbots, RAG pipelines, and multi-agent systems — checking whether they work correctly, are safe to use, and can handle real-world load.
+  </p>
+  <p>
+    You give METRON an endpoint (the URL of your AI system) and a description of what it does. METRON then runs a full test campaign — generating realistic users (personas), realistic questions and attack attempts (test prompts), sending them to your AI, scoring the responses, and delivering a clear health report with root-cause analysis.
+  </p>
+
+  <div class="box box-purple">
+    <strong>In one sentence:</strong> METRON is an automated red-team + quality tester for AI systems that produces a single health score and a detailed breakdown of every failure.
+  </div>
+
+  <h2 class="section">Key Capabilities</h2>
+  <ul>
+    <li>Fully automated — no manual test scripts needed</li>
+    <li>Tests <strong>6 dimensions</strong>: functional correctness, security, quality, performance, load, and RAG faithfulness</li>
+    <li>Generates <strong>realistic user personas</strong> with different expertise levels and intents (genuine, adversarial, edge-case)</li>
+    <li>Uses real attack datasets (AdvBench, HarmBench) for security testing</li>
+    <li>Produces a <strong>health score</strong> (0–100 %) with domain-aware weighting</li>
+    <li>Root cause analysis pinpoints <em>why</em> failures happened from a 133-point taxonomy</li>
+    <li>Works with any HTTP-accessible AI endpoint (chatbot, RAG, form-based, multi-agent)</li>
+  </ul>
+
+  <div class="metric-grid">
+    <div class="metric-card mc-purple"><div class="label">Test Dimensions</div><div class="value">6</div></div>
+    <div class="metric-card mc-blue"><div class="label">Pipeline Stages</div><div class="value">9</div></div>
+    <div class="metric-card mc-green"><div class="label">LLM Providers</div><div class="value">4</div></div>
+    <div class="metric-card mc-red"><div class="label">RCA Taxonomy Points</div><div class="value">133</div></div>
+    <div class="metric-card mc-yellow"><div class="label">App Types Supported</div><div class="value">4</div></div>
+    <div class="metric-card mc-slate"><div class="label">Security Metrics</div><div class="value">6</div></div>
+  </div>
+
+  <!-- ──────────────────────────────────────────────────────────────────── -->
+  <h1 class="section page-break" id="architecture"><span class="sec-number">2</span>System Architecture</h1>
+
+  <p>METRON has two main parts: a <strong>Next.js web application</strong> (the user interface) and a <strong>Python FastAPI server</strong> (the testing engine). They communicate over HTTP.</p>
+
+  <h2 class="section" id="frontend">2.1 Frontend — metron-ai</h2>
+  <p>Built with <strong>Next.js 14</strong> (React, TypeScript). Runs in the browser and is the user's control panel.</p>
+
+  <table>
+    <thead><tr><th>Page / Route</th><th>What it does</th></tr></thead>
+    <tbody>
+      <tr><td><code>/</code> (Login)</td><td>Sign in with email/password via AWS Cognito</td></tr>
+      <tr><td><code>/register</code></td><td>Create a new account</td></tr>
+      <tr><td><code>/dashboard</code></td><td>Project hub — view all your AI projects</td></tr>
+      <tr><td><code>/dashboard/project/[id]</code></td><td>Project landing page with run history and health scores</td></tr>
+      <tr><td><code>.../configure</code></td><td>Set up a test run (endpoint URL, LLM, attack types, etc.)</td></tr>
+      <tr><td><code>.../preview</code></td><td>Preview generated personas and scenarios before running</td></tr>
+      <tr><td><code>.../builder</code></td><td>Toggle which test modules to include</td></tr>
+      <tr><td><code>.../run</code></td><td>Live feed of the pipeline as it executes — shows each stage in real time</td></tr>
+      <tr><td><code>.../results</code></td><td>Full results dashboard with all scores, charts, and failure drill-downs</td></tr>
+      <tr><td><code>.../analysis</code></td><td>Detailed analysis view with pass/fail breakdown per test class</td></tr>
+    </tbody>
+  </table>
+
+  <h2 class="section" id="backend">2.2 Backend — metron-unified</h2>
+  <p>Built with <strong>Python 3.10+ / FastAPI</strong>. Runs the 8-stage testing pipeline as a background task.</p>
+
+  <table>
+    <thead><tr><th>Component</th><th>File</th><th>Responsibility</th></tr></thead>
+    <tbody>
+      <tr><td>API Server</td><td><code>fastapi_server.py</code></td><td>All HTTP endpoints, job queue, auth validation</td></tr>
+      <tr><td>Pipeline Orchestrator</td><td><code>pipeline.py</code></td><td>Runs all 8 stages, writes progress to job store</td></tr>
+      <tr><td>LLM Client</td><td><code>core/llm_client.py</code></td><td>Unified interface to all LLM providers via LiteLLM</td></tr>
+      <tr><td>Data Models</td><td><code>core/models.py</code></td><td>Pydantic schemas for all data structures</td></tr>
+      <tr><td>Database</td><td><code>core/db.py</code></td><td>SQLite persistence for run history and projects</td></tr>
+      <tr><td>Config</td><td><code>core/config.py</code></td><td>LLM providers, domain weights, thresholds</td></tr>
+      <tr><td>Adapters</td><td><code>core/adapters/</code></td><td>Connects to chatbot, RAG, form, multi-agent endpoints</td></tr>
+      <tr><td>Stages s0–s8</td><td><code>stages/</code></td><td>Individual pipeline stage implementations</td></tr>
+    </tbody>
+  </table>
+
+  <h2 class="section" id="dataflow">2.3 Data Flow</h2>
+
+  <div class="flow">
+    <div class="flow-step">
+      <div class="flow-box">User<br>Browser</div>
+      <div class="flow-label">Next.js UI</div>
+    </div>
+    <div class="flow-step">
+      <div class="flow-box">FastAPI<br>Server</div>
+      <div class="flow-label">HTTP/REST</div>
+    </div>
+    <div class="flow-step">
+      <div class="flow-box">Pipeline<br>Orchestrator</div>
+      <div class="flow-label">Background Task</div>
+    </div>
+    <div class="flow-step">
+      <div class="flow-box">LLM<br>Provider</div>
+      <div class="flow-label">Test Generation</div>
+    </div>
+    <div class="flow-step">
+      <div class="flow-box">Target AI<br>Endpoint</div>
+      <div class="flow-label">Your AI App</div>
+    </div>
+    <div class="flow-step">
+      <div class="flow-box">Evaluators<br>+ RCA</div>
+      <div class="flow-label">Scoring</div>
+    </div>
+    <div class="flow-step">
+      <div class="flow-box">SQLite<br>DB</div>
+      <div class="flow-label">Persistence</div>
+    </div>
+  </div>
+
+  <ol>
+    <li>User fills in the Configure page (endpoint URL, LLM provider, test options) and clicks <strong>Run</strong>.</li>
+    <li>The frontend sends a <code>POST /api/run</code> request to the FastAPI server.</li>
+    <li>The server assigns a <code>run_id</code>, stores the job in memory, and launches the pipeline as a background task.</li>
+    <li>The frontend polls <code>GET /api/job/{run_id}/status</code> every few seconds to show live progress.</li>
+    <li>The pipeline generates test prompts using your chosen LLM provider, then sends them to your AI endpoint.</li>
+    <li>Each response is evaluated by multiple scorers (DeepEval, Presidio, Detoxify, LLM Guard, LLM judges).</li>
+    <li>Results are aggregated into a health score, an RCA report, and an HTML report.</li>
+    <li>The completed run is saved to SQLite and the UI displays the full results.</li>
+  </ol>
+
+  <!-- ──────────────────────────────────────────────────────────────────── -->
+  <h1 class="section page-break" id="pipeline"><span class="sec-number">3</span>The 8-Stage Testing Pipeline</h1>
+
+  <p>Every test run goes through the same numbered stages, in order. Each stage builds on the previous one. Progress is reported live to the UI as a percentage (0–100 %).</p>
+
+  <div class="stage-grid">
+    <div class="stage-card"><div class="stage-num">Stage 0</div><div class="stage-title">Application Profiling</div><p>Understands what the AI does, who uses it, and what its boundaries are.</p></div>
+    <div class="stage-card"><div class="stage-num">Stage 1</div><div class="stage-title">Persona Generation</div><p>Creates realistic simulated users with different goals, expertise, and emotional states.</p></div>
+    <div class="stage-card"><div class="stage-num">Stage 2</div><div class="stage-title">Test Generation</div><p>Writes functional, security, and quality test prompts tailored to each persona.</p></div>
+    <div class="stage-card"><div class="stage-num">Stage 3</div><div class="stage-title">Conversation Execution</div><p>Sends every test prompt to your AI endpoint and records the responses.</p></div>
+    <div class="stage-card"><div class="stage-num">Stage 4</div><div class="stage-title">Evaluation</div><p>Scores responses across all six test dimensions using specialist tools and LLM judges.</p></div>
+    <div class="stage-card"><div class="stage-num">Stage 5</div><div class="stage-title">Aggregation</div><p>Combines all scores into per-class summaries and a single health score.</p></div>
+    <div class="stage-card"><div class="stage-num">Stage 6</div><div class="stage-title">Feedback Loop</div><p>Analyses patterns in failures to surface systemic issues.</p></div>
+    <div class="stage-card"><div class="stage-num">Stage 7</div><div class="stage-title">Report Generation</div><p>Produces the final JSON data and a downloadable HTML report.</p></div>
+  </div>
+  <div class="stage-card" style="margin-top:0"><div class="stage-num">Stage 8</div><div class="stage-title">Root Cause Analysis (RCA)</div><p>Maps failures to a 133-point taxonomy and identifies the most probable root causes.</p></div>
+
+  <!-- Stage 0 -->
+  <h2 class="section" id="s0">3.1 Stage 0 — Application Profiling</h2>
+  <p><strong>Progress: 5–10 %</strong></p>
+  <p>
+    Before testing can begin, METRON needs to understand what your AI application does.
+    It analyses the <strong>seed document</strong> you upload (a description, architecture diagram, or technical spec) and extracts:
+  </p>
+  <ul>
+    <li><strong>Application type</strong> — chatbot, RAG pipeline, multi-agent, or form</li>
+    <li><strong>Domain</strong> — finance, healthcare, legal, education, etc.</li>
+    <li><strong>User types</strong> — who uses the system (e.g. "customer", "analyst", "admin")</li>
+    <li><strong>Use cases</strong> — what tasks the system handles</li>
+    <li><strong>Boundaries</strong> — what the system should and should not do</li>
+    <li><strong>Technical attack surface</strong> — 24 categories including authentication type, tools the agent can call, data it can access, and output destinations (used to generate targeted security tests)</li>
+  </ul>
+  <div class="box box-blue">
+    <strong>No document?</strong> If you don't upload a document, METRON builds the profile from the agent description and domain you type in the Configure form.
+  </div>
+
+  <!-- Stage 1 -->
+  <h2 class="section" id="s1">3.2 Stage 1 — Persona Generation</h2>
+  <p><strong>Progress: 10–18 %</strong></p>
+  <p>
+    Real AI systems are used by many different types of people. METRON simulates this diversity using the <strong>Fishbone method</strong>: it fills a coverage matrix of user archetypes across multiple dimensions:
+  </p>
+  <table>
+    <thead><tr><th>Dimension</th><th>Values</th></tr></thead>
+    <tbody>
+      <tr><td>Intent</td><td>Genuine, Adversarial, Edge-case</td></tr>
+      <tr><td>Expertise</td><td>Novice, Intermediate, Expert</td></tr>
+      <tr><td>Emotional State</td><td>Calm, Frustrated, Urgent</td></tr>
+      <tr><td>Conversation State</td><td>Seeking, Clarifying, Escalating, Satisfied, Abandoned</td></tr>
+    </tbody>
+  </table>
+  <p>
+    Each persona gets a name, a background story, a goal, and example entry phrases. A coverage validator checks the persona set for gaps and adds up to 3 additional personas if any archetype is missing.
+  </p>
+
+  <!-- Stage 2 -->
+  <h2 class="section" id="s2">3.3 Stage 2 — Test Generation</h2>
+  <p><strong>Progress: 20–25 %</strong></p>
+  <p>Three types of tests are generated:</p>
+  <ul>
+    <li><strong>Functional prompts</strong> — realistic questions each persona would genuinely ask. For RAG applications, these are grounded in the provided knowledge text.</li>
+    <li><strong>Security / adversarial prompts</strong> — attack attempts generated for adversarial personas, covering jailbreaks, prompt injection, PII extraction, toxicity, and category-specific attacks drawn from the AdvBench and HarmBench golden datasets.</li>
+    <li><strong>Quality criteria</strong> — domain-specific criteria that define what a good answer looks like (e.g. "answers should cite sources", "responses must not exceed 3 sentences").</li>
+  </ul>
+  <div class="box box-yellow">
+    <strong>Attack categories</strong> you can choose on the Configure page: Direct Jailbreak, Role-play Jailbreak, Prompt Injection, PII Extraction, Toxicity Elicitation, Bias Elicitation, Data Exfiltration, Instruction Override, System Prompt Leak, Off-topic Misuse.
+  </div>
+
+  <!-- Stage 3 -->
+  <h2 class="section" id="s3">3.4 Stage 3 — Conversation Execution</h2>
+  <p><strong>Progress: 28–58 %</strong></p>
+  <p>
+    Every test prompt is sent to your AI endpoint via the appropriate <strong>adapter</strong>. Responses and latency are recorded.
+    The pipeline supports four adapter types:
+  </p>
+  <table>
+    <thead><tr><th>Adapter</th><th>Use case</th></tr></thead>
+    <tbody>
+      <tr><td>ChatbotAdapter</td><td>Standard request/response chatbot APIs</td></tr>
+      <tr><td>RAGAdapter</td><td>RAG systems that return both an answer and retrieved context chunks</td></tr>
+      <tr><td>FormAdapter</td><td>Form-filling or structured-input AI systems</td></tr>
+      <tr><td>MultiAgentAdapter</td><td>Multi-agent systems that return an answer plus an execution trace</td></tr>
+    </tbody>
+  </table>
+  <p>
+    The conversation runner supports multi-turn exchanges (follow-up questions). For RAG mode, a separate <strong>ground truth stream</strong> sends your uploaded question-answer pairs directly to the endpoint and records correctness.
+  </p>
+
+  <!-- Stage 4 -->
+  <h2 class="section" id="s4">3.5 Stage 4 — Evaluation</h2>
+  <p><strong>Progress: 58–89 %</strong></p>
+  <p>
+    All three evaluation streams run <strong>in parallel</strong>. Each uses the best available tool for the job — specialist libraries are preferred over LLM-based scoring wherever possible to reduce cost and improve consistency.
+  </p>
+  <p>See <a href="#testing">Section 4</a> for the full breakdown of what is tested and how each metric is scored.</p>
+
+  <!-- Stage 5 -->
+  <h2 class="section" id="s5">3.6 Stage 5 — Aggregation</h2>
+  <p><strong>Progress: 90–93 %</strong></p>
+  <p>
+    All <code>MetricResult</code> objects are aggregated into summary statistics per test class (functional, security, quality, RAG, performance, load). A <strong>health score</strong> is calculated as a weighted average, where weights depend on the domain (e.g. medical/finance applications give more weight to security; education applications give more weight to quality). See Section 7 for the scoring model.
+  </p>
+
+  <!-- Stage 6 -->
+  <h2 class="section" id="s6">3.7 Stage 6 — Feedback Loop</h2>
+  <p><strong>Progress: runs after Stage 4</strong></p>
+  <p>
+    The feedback loop analyses patterns across all failing conversations. It looks for systemic issues such as: a particular persona type failing consistently, a specific attack category always succeeding, or a certain conversation length triggering errors. These insights feed into the RCA stage.
+  </p>
+
+  <!-- Stage 7 -->
+  <h2 class="section" id="s7">3.8 Stage 7 — Report Generation</h2>
+  <p><strong>Progress: 97–99 %</strong></p>
+  <p>
+    The aggregated report is serialised to JSON (stored in memory and SQLite) and to a standalone <strong>HTML report</strong> that can be downloaded from the Results page. The HTML report is self-contained — it includes all charts and tables and can be opened in any browser with no internet connection.
+  </p>
+
+  <!-- Stage 8 -->
+  <h2 class="section" id="s8">3.9 Stage 8 — Root Cause Analysis (RCA)</h2>
+  <p><strong>Progress: 94–96 %</strong></p>
+  <p>
+    RCA maps every failure signal to a <strong>133-point failure taxonomy</strong> with 8 categories:
+  </p>
+  <table>
+    <thead><tr><th>Category</th><th>What it covers</th></tr></thead>
+    <tbody>
+      <tr><td>C1 — AI/Model</td><td>Hallucination, reasoning errors, context handling, model limitations</td></tr>
+      <tr><td>C2 — RAG</td><td>Retrieval failures, chunking problems, context faithfulness</td></tr>
+      <tr><td>C3 — Integration</td><td>API errors, tool call failures, adapter mismatches</td></tr>
+      <tr><td>C4 — Security</td><td>Prompt injection vulnerabilities, PII leaks, bias, insufficient guardrails</td></tr>
+      <tr><td>C5 — Latency</td><td>Slow response times, timeout errors, high p95 latency</td></tr>
+      <tr><td>C6 — TPM / Rate Limits</td><td>Token-per-minute exhaustion, 429 errors</td></tr>
+      <tr><td>C7 — Database</td><td>Data retrieval errors, stale knowledge, missing records</td></tr>
+      <tr><td>C8 — Operational</td><td>Infrastructure failures, configuration errors, deployment issues</td></tr>
+    </tbody>
+  </table>
+  <p>
+    Each root cause is assigned a <strong>probability score</strong> based on how many relevant signals were observed. The top causes and their evidence are shown on the Results page. A per-prompt failure classifier also adds a <em>taxonomy label</em> to every individual failing test so you can drill down to exactly why each prompt failed.
+  </p>
+
+  <!-- ──────────────────────────────────────────────────────────────────── -->
+  <h1 class="section page-break" id="testing"><span class="sec-number">4</span>What METRON Tests</h1>
+
+  <!-- 4.1 Functional -->
+  <h2 class="section" id="functional">4.1 Functional Testing</h2>
+  <p><strong>Question: Does the AI do what it is supposed to do?</strong></p>
+  <p>Functional tests send realistic user queries to the AI and score the responses for:</p>
+  <table>
+    <thead><tr><th>Metric</th><th>What it measures</th><th>Tool</th></tr></thead>
+    <tbody>
+      <tr><td>Answer Relevancy</td><td>Is the response actually relevant to the question?</td><td>DeepEval AnswerRelevancyMetric</td></tr>
+      <tr><td>Hallucination</td><td>Does the AI invent facts that are not supported?</td><td>DeepEval HallucinationMetric</td></tr>
+      <tr><td>Usefulness</td><td>Is the response genuinely helpful to the user's goal?</td><td>LLM judge rubric</td></tr>
+      <tr><td>Completeness</td><td>Does the response answer all parts of the question?</td><td>LLM judge rubric</td></tr>
+      <tr><td>Consistency</td><td>Is the response coherent and internally consistent?</td><td>LLM judge rubric</td></tr>
+    </tbody>
+  </table>
+  <div class="box box-green">
+    <strong>Pass threshold:</strong> A functional test is marked as passing if its score is ≥ 0.50 (50 %). The overall functional pass rate is the percentage of tests that pass.
+  </div>
+
+  <!-- 4.2 Security -->
+  <h2 class="section" id="security">4.2 Security Testing</h2>
+  <p><strong>Question: Is the AI safe and resistant to attacks?</strong></p>
+  <p>Security tests use adversarial personas to probe the AI for vulnerabilities. METRON uses dedicated specialist libraries — not LLM guessing — for the most critical checks:</p>
+  <table>
+    <thead><tr><th>Metric</th><th>What it detects</th><th>Tool</th></tr></thead>
+    <tbody>
+      <tr><td>PII Leakage</td><td>Does the AI output personal data (names, emails, phone numbers, ID numbers)?</td><td>Microsoft Presidio AnalyzerEngine</td></tr>
+      <tr><td>Toxicity</td><td>Does the AI produce harmful, offensive, or hateful content?</td><td>Detoxify classifier (ML model)</td></tr>
+      <tr><td>Prompt Injection</td><td>Can an attacker hijack the AI's instructions via a crafted input?</td><td>LLM Guard PromptInjection scanner</td></tr>
+      <tr><td>Bias &amp; Fairness</td><td>Does the AI respond differently based on protected characteristics?</td><td>DeepEval BiasMetric (Azure OpenAI)</td></tr>
+      <tr><td>Toxic Request Refusal</td><td>Does the AI refuse known-harmful requests (from HarmBench dataset)?</td><td>Heuristic refusal check (40+ language patterns)</td></tr>
+      <tr><td>Attack Resistance</td><td>Does the AI resist jailbreak attempts, role-play attacks, and instruction overrides?</td><td>LLM judge rubric with sanitised attack context</td></tr>
+    </tbody>
+  </table>
+  <div class="box box-red">
+    <strong>Domain-aware PII:</strong> In HR, medical, legal, and finance domains, names and locations are <em>expected</em> in responses and are not flagged as PII leakage. METRON adjusts its sensitivity based on your AI's domain.
+  </div>
+  <p>Security tests also include probes generated from the <strong>AdvBench</strong> and <strong>HarmBench</strong> golden attack datasets. These are real-world harmful prompts used by AI safety researchers.</p>
+
+  <!-- 4.3 Quality -->
+  <h2 class="section" id="quality">4.3 Quality Testing</h2>
+  <p><strong>Question: Is the AI's output actually good?</strong></p>
+  <p>Quality testing evaluates responses against domain-specific criteria generated in Stage 2. It uses <strong>G-Eval</strong> (DeepEval's LLM-based rubric evaluator) to score responses on criteria such as:</p>
+  <ul>
+    <li>Factual accuracy</li>
+    <li>Clarity and conciseness</li>
+    <li>Appropriate tone for the domain</li>
+    <li>Citation / source attribution (for RAG systems)</li>
+    <li>Compliance with domain-specific standards (e.g. legal disclaimer presence)</li>
+  </ul>
+  <div class="box box-blue">
+    <strong>Pass threshold:</strong> Quality tests use a higher threshold of <strong>0.70 (70 %)</strong> because quality expectations are naturally higher than simple correctness.
+  </div>
+
+  <!-- 4.4 Performance -->
+  <h2 class="section" id="performance">4.4 Performance Testing</h2>
+  <p><strong>Question: How fast does the AI respond?</strong></p>
+  <p>
+    Performance testing sends a configurable number of sequential requests to your AI endpoint and measures response latency. Results include:
+  </p>
+  <table>
+    <thead><tr><th>Metric</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td>Average Latency</td><td>Mean response time across all requests (milliseconds)</td></tr>
+      <tr><td>Minimum Latency</td><td>Fastest observed response time</td></tr>
+      <tr><td>Maximum Latency</td><td>Slowest observed response time</td></tr>
+      <tr><td>Median Latency (p50)</td><td>50th percentile — typical response time</td></tr>
+      <tr><td>p95 Latency</td><td>95th percentile — worst-case response time for 95 % of requests</td></tr>
+      <tr><td>p99 Latency</td><td>99th percentile — the very worst-case response time</td></tr>
+      <tr><td>Throughput (RPS)</td><td>Requests processed per second</td></tr>
+      <tr><td>Error Rate</td><td>Percentage of requests that returned an error</td></tr>
+    </tbody>
+  </table>
+  <div class="box box-yellow">
+    <strong>Pass threshold:</strong> Performance passes if p95 latency ≤ 5,000 ms (5 seconds). This threshold can be adjusted in <code>core/config.py</code>.
+  </div>
+
+  <!-- 4.5 Load -->
+  <h2 class="section" id="load">4.5 Load Testing</h2>
+  <p><strong>Question: Can the AI handle many users at once?</strong></p>
+  <p>
+    Load testing uses <strong>Locust</strong> (an open-source load testing tool) to simulate many concurrent users hitting your AI endpoint simultaneously. You configure the number of concurrent users and test duration on the Configure page.
+  </p>
+  <table>
+    <thead><tr><th>Metric</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td>Concurrent Users</td><td>Number of simultaneous simulated users</td></tr>
+      <tr><td>Total Requests</td><td>How many requests were sent in total</td></tr>
+      <tr><td>Requests Per Second</td><td>Sustained throughput under load</td></tr>
+      <tr><td>Average Latency under Load</td><td>Mean response time while under concurrent pressure</td></tr>
+      <tr><td>p95 Latency under Load</td><td>Worst-case for 95 % of requests under load</td></tr>
+      <tr><td>Error Rate under Load</td><td>Percentage of requests that failed under concurrent stress</td></tr>
+    </tbody>
+  </table>
+  <p>
+    A load test is considered passing if the error rate stays below 10 % and latency remains within acceptable bounds at the configured concurrency level.
+  </p>
+
+  <!-- 4.6 RAG Evaluation -->
+  <h2 class="section" id="rag">4.6 RAG Evaluation</h2>
+  <p><strong>Question: Is the RAG system retrieving and using the right information?</strong></p>
+  <p>
+    When the application type is set to <strong>RAG</strong>, METRON runs an additional evaluation stream using the <strong>RAGAS</strong> framework. This checks the quality of the retrieval-augmented generation process itself — not just whether the final answer is correct.
+  </p>
+  <table>
+    <thead><tr><th>Metric</th><th>What it measures</th></tr></thead>
+    <tbody>
+      <tr><td>Faithfulness</td><td>Is the answer supported by the retrieved context? (Detects hallucination from the model ignoring its context)</td></tr>
+      <tr><td>Answer Recall</td><td>Does the answer cover all the relevant information from the context?</td></tr>
+      <tr><td>Context Precision</td><td>Are the retrieved context chunks actually relevant to the question?</td></tr>
+      <tr><td>Answer Correctness</td><td>How close is the answer to the ground truth answer you provided?</td></tr>
+    </tbody>
+  </table>
+  <p>
+    For Answer Correctness, you can upload a <strong>ground truth file</strong> (CSV or JSON) with question-answer pairs. METRON sends each question to your RAG endpoint and compares the response to the expected answer.
+  </p>
+  <div class="box box-green">
+    <strong>Ground truth file formats accepted:</strong>
+    <br>CSV with columns: <code>question</code>, <code>expected_answer</code> (also accepts: <code>query</code>, <code>answer</code>, <code>reference</code>)
+    <br>JSON as a list of objects or as a wrapper object with keys like <code>test_cases</code>, <code>data</code>, or <code>qa_pairs</code>
+  </div>
+
+  <!-- ──────────────────────────────────────────────────────────────────── -->
+  <h1 class="section page-break" id="apptypes"><span class="sec-number">5</span>Supported Application Types</h1>
+
+  <table>
+    <thead><tr><th>Type</th><th>Description</th><th>Special capabilities</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><strong>Chatbot</strong></td>
+        <td>Standard conversational AI that takes a text message and returns a text response</td>
+        <td>Multi-turn conversation support; flexible request/response field mapping</td>
+      </tr>
+      <tr>
+        <td><strong>RAG</strong></td>
+        <td>Retrieval-Augmented Generation — AI that answers questions using a knowledge base</td>
+        <td>RAG-specific metrics (faithfulness, recall, precision); ground truth evaluation; context extraction</td>
+      </tr>
+      <tr>
+        <td><strong>Multi-Agent</strong></td>
+        <td>Systems where multiple AI agents collaborate to complete tasks</td>
+        <td>Execution trace extraction; multi-step reasoning evaluation; agent coordination testing</td>
+      </tr>
+      <tr>
+        <td><strong>Form</strong></td>
+        <td>AI that processes structured form inputs (e.g. insurance claim forms, intake questionnaires)</td>
+        <td>Structured input/output evaluation; field extraction testing</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h2 class="section">Endpoint Configuration</h2>
+  <p>METRON connects to your AI endpoint via HTTP. You can configure:</p>
+  <ul>
+    <li><strong>Endpoint URL</strong> — the full URL to send test requests to</li>
+    <li><strong>Request field</strong> — the JSON field name to put the test prompt in (e.g. <code>message</code>, <code>query</code>, <code>input</code>)</li>
+    <li><strong>Response field</strong> — the JSON field name to read the AI's response from (e.g. <code>answer</code>, <code>response</code>, <code>output</code>)</li>
+    <li><strong>Auth type</strong> — None, Bearer token, API Key, or Basic auth</li>
+    <li><strong>Request template</strong> — optional JSON template for complex request bodies</li>
+    <li><strong>Response trim marker</strong> — optional string marker to extract just the relevant part of the response</li>
+  </ul>
+
+  <!-- ──────────────────────────────────────────────────────────────────── -->
+  <h1 class="section page-break" id="llm"><span class="sec-number">6</span>LLM Provider Support</h1>
+
+  <p>
+    METRON uses a <strong>separate LLM provider</strong> to generate test prompts, act as an LLM judge, and run DeepEval metrics. This is distinct from your AI endpoint being tested — it is METRON's own intelligence engine.
+  </p>
+
+  <table>
+    <thead><tr><th>Provider</th><th>Models Used</th><th>Rate Limit</th><th>Best For</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><strong>NVIDIA NIM</strong> (Default)</td>
+        <td>Llama 3.1 8B (fast) / 70B (judge)</td>
+        <td>40 RPM (free tier)</td>
+        <td>Balanced quality; free tier; good starting point</td>
+      </tr>
+      <tr>
+        <td><strong>Azure OpenAI</strong></td>
+        <td>GPT-4o</td>
+        <td>2,700 RPM / 450K TPM</td>
+        <td>Highest quality judgements; large-scale runs</td>
+      </tr>
+      <tr>
+        <td><strong>Groq</strong></td>
+        <td>Llama 3.1 8B (fast) / 3.3 70B (judge)</td>
+        <td>30 RPM (free tier)</td>
+        <td>Very fast inference; free tier</td>
+      </tr>
+      <tr>
+        <td><strong>Google Gemini</strong></td>
+        <td>Gemini 2.5 Flash</td>
+        <td>60 RPM (free tier)</td>
+        <td>Fast; 1M tokens/day free</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="box box-purple">
+    <strong>Automatic fallback:</strong> If the primary provider returns a rate-limit error (HTTP 429), METRON automatically retries with Groq's 70B model, then falls back to Groq's 8B model.
+  </div>
+
+  <h2 class="section">Task-specific model routing</h2>
+  <p>METRON selects different model tiers for different tasks:</p>
+  <ul>
+    <li><strong>fast</strong> — persona generation, simple formatting tasks (uses smaller/cheaper model)</li>
+    <li><strong>judge</strong> — scoring responses, LLM-based evaluation (uses largest/best model)</li>
+    <li><strong>balanced</strong> — test prompt generation (uses best available model)</li>
+  </ul>
+
+  <!-- ──────────────────────────────────────────────────────────────────── -->
+  <h1 class="section page-break" id="scoring"><span class="sec-number">7</span>Health Score &amp; Scoring Model</h1>
+
+  <h2 class="section">What is the Health Score?</h2>
+  <p>
+    The <strong>Health Score</strong> is a single number from <strong>0 to 100 %</strong> that summarises how well your AI performed across all test dimensions. A score of 100 % means every test passed. A score below 50 % means the system has significant issues and should not be deployed without fixes.
+  </p>
+
+  <h2 class="section">How it is calculated</h2>
+  <p>The health score is a <strong>weighted average</strong> of the pass rates of each test class. The weights depend on your AI's domain because different domains have different risk profiles:</p>
+
+  <table>
+    <thead><tr><th>Domain</th><th>Functional</th><th>Security</th><th>Quality</th><th>Performance</th><th>Load</th></tr></thead>
+    <tbody>
+      <tr><td>Finance / Banking</td><td>35 %</td><td>40 %</td><td>10 %</td><td>10 %</td><td>5 %</td></tr>
+      <tr><td>Medical / Healthcare</td><td>35 %</td><td>45 %</td><td>10 %</td><td>8 %</td><td>2 %</td></tr>
+      <tr><td>Legal</td><td>35 %</td><td>40 %</td><td>15 %</td><td>7 %</td><td>3 %</td></tr>
+      <tr><td>E-commerce / Retail</td><td>35 %</td><td>20 %</td><td>10 %</td><td>20 %</td><td>15 %</td></tr>
+      <tr><td>Education</td><td>40 %</td><td>15 %</td><td>30 %</td><td>10 %</td><td>5 %</td></tr>
+      <tr><td>Customer Support</td><td>40 %</td><td>15 %</td><td>15 %</td><td>20 %</td><td>10 %</td></tr>
+      <tr><td>Government</td><td>30 %</td><td>45 %</td><td>15 %</td><td>7 %</td><td>3 %</td></tr>
+      <tr><td>General (default)</td><td>40 %</td><td>30 %</td><td>10 %</td><td>15 %</td><td>5 %</td></tr>
+    </tbody>
+  </table>
+
+  <h2 class="section">Pass / Fail Thresholds</h2>
+  <table>
+    <thead><tr><th>Dimension</th><th>Pass Threshold</th></tr></thead>
+    <tbody>
+      <tr><td>Health Score (overall)</td><td>≥ 50 %</td></tr>
+      <tr><td>Functional</td><td>Score ≥ 0.50 per test</td></tr>
+      <tr><td>Security</td><td>Score ≥ 0.50 per test</td></tr>
+      <tr><td>Quality</td><td>Score ≥ 0.70 per test (higher bar)</td></tr>
+      <tr><td>Performance (p95 latency)</td><td>≤ 5,000 ms</td></tr>
+      <tr><td>Hallucination score</td><td>≤ 0.50 (lower is better)</td></tr>
+      <tr><td>Toxicity score</td><td>≤ 0.30 (lower is better)</td></tr>
+      <tr><td>Bias score</td><td>≤ 0.40 (lower is better)</td></tr>
+    </tbody>
+  </table>
+
+  <!-- ──────────────────────────────────────────────────────────────────── -->
+  <h1 class="section page-break" id="api"><span class="sec-number">8</span>API Reference</h1>
+
+  <p>The FastAPI backend exposes the following HTTP endpoints. All endpoints except <code>/api/health</code> require a valid AWS Cognito Bearer token in the <code>Authorization</code> header.</p>
+
+  <table>
+    <thead><tr><th>Method</th><th>Endpoint</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>GET</code></td><td><code>/api/health</code></td><td>Server health check — returns <code>{"status":"ok","version":"2.0.0"}</code></td></tr>
+      <tr><td><code>GET</code></td><td><code>/api/providers</code></td><td>List all supported LLM providers with their models and rate limits</td></tr>
+      <tr><td><code>GET</code></td><td><code>/api/tools/status</code></td><td>Check which optional evaluation tools are installed (Presidio, Detoxify, LLM Guard, DeepEval, RAGAS)</td></tr>
+      <tr><td><code>POST</code></td><td><code>/api/connect-test</code></td><td>Test connectivity to your AI endpoint before running a full test</td></tr>
+      <tr><td><code>POST</code></td><td><code>/api/parse-document</code></td><td>Upload a document to extract an application profile (used to auto-fill the Configure form)</td></tr>
+      <tr><td><code>POST</code></td><td><code>/api/parse-architecture</code></td><td>Parse an architecture diagram (image) or text document into structured fields</td></tr>
+      <tr><td><code>POST</code></td><td><code>/api/preview</code></td><td>Generate a preview of personas and scenarios without running a full test</td></tr>
+      <tr><td><code>POST</code></td><td><code>/api/run</code></td><td>Start a full test run (multipart form: config JSON + optional document + optional ground truth file)</td></tr>
+      <tr><td><code>GET</code></td><td><code>/api/job/{run_id}/status</code></td><td>Poll the status of a running job — returns progress %, current phase, and live log events</td></tr>
+      <tr><td><code>GET</code></td><td><code>/api/job/{run_id}/results</code></td><td>Fetch the complete results of a completed job</td></tr>
+      <tr><td><code>GET</code></td><td><code>/api/project/{project_id}/runs</code></td><td>List all runs for a project with their health scores and timestamps</td></tr>
+      <tr><td><code>GET</code></td><td><code>/api/runs/{run_id_a}/compare/{run_id_b}</code></td><td>Compare two runs — shows health score delta and pass-rate changes per test class</td></tr>
+      <tr><td><code>POST</code></td><td><code>/api/projects</code></td><td>Create a new project</td></tr>
+      <tr><td><code>GET</code></td><td><code>/api/projects</code></td><td>List all projects belonging to the authenticated user</td></tr>
+      <tr><td><code>GET</code></td><td><code>/api/projects/{project_id}</code></td><td>Get details of a single project</td></tr>
+      <tr><td><code>DELETE</code></td><td><code>/api/projects/{project_id}</code></td><td>Delete a project</td></tr>
+      <tr><td><code>GET</code></td><td><code>/api/auth/me</code></td><td>Validate the Bearer token and return the caller's email address</td></tr>
+      <tr><td><code>POST</code></td><td><code>/api/auth/logout</code></td><td>Sign out (front-end only — Cognito token invalidation)</td></tr>
+    </tbody>
+  </table>
+
+  <h2 class="section">Example: Starting a Test Run</h2>
+  <pre><code>POST /api/run
+Authorization: Bearer &lt;cognito_token&gt;
+Content-Type: multipart/form-data
+
+config = {
+  "endpoint_url":       "https://your-ai.example.com/chat",
+  "request_field":      "message",
+  "response_field":     "reply",
+  "auth_type":          "bearer",
+  "auth_token":         "your-ai-api-key",
+  "agent_description":  "A customer support chatbot for a software company",
+  "agent_domain":       "support",
+  "agent_name":         "SupportBot",
+  "application_type":   "chatbot",
+  "llm_provider":       "Groq",
+  "llm_api_key":        "gsk_...",
+  "num_personas":       10,
+  "num_scenarios":      20,
+  "selected_attacks":   ["jailbreak_direct", "prompt_injection", "pii_extraction"]
+}
+
+Response:
+{ "run_id": "abc-123-...", "project_id": "proj-456-..." }</code></pre>
+
+  <!-- ──────────────────────────────────────────────────────────────────── -->
+  <h1 class="section page-break" id="security-arch"><span class="sec-number">9</span>Security Architecture</h1>
+
+  <h2 class="section">Authentication</h2>
+  <p>
+    METRON uses <strong>AWS Cognito</strong> for user authentication. The frontend obtains a JWT Bearer token from Cognito after login. Every API request includes this token in the <code>Authorization</code> header. The backend validates the token on every request.
+  </p>
+
+  <h2 class="section">Data Isolation</h2>
+  <ul>
+    <li>Every run belongs to a specific user. The API returns HTTP 403 if you try to access another user's run or project.</li>
+    <li><strong>API keys are never stored</strong> in the job store or the database. They are used for the duration of the pipeline and discarded.</li>
+    <li>The in-memory job store contains only status, progress, and results — no credentials.</li>
+  </ul>
+
+  <h2 class="section">Concurrency</h2>
+  <p>
+    A global semaphore limits METRON to <strong>10 concurrent pipeline runs</strong> at once. Each run also has its own lock to prevent race conditions if multiple stages update the job store simultaneously.
+  </p>
+
+  <h2 class="section">Error Handling</h2>
+  <p>
+    Each evaluation stage runs independently. If one stage fails (e.g. DeepEval is not installed, or the RAG evaluator times out), the pipeline records a warning and continues with the remaining stages. A run only fails hard if the conversation execution stage itself cannot reach your AI endpoint.
+  </p>
+
+  <!-- ──────────────────────────────────────────────────────────────────── -->
+  <h1 class="section page-break" id="setup"><span class="sec-number">10</span>Setup &amp; Configuration</h1>
+
+  <h2 class="section">Requirements</h2>
+  <table>
+    <thead><tr><th>Component</th><th>Requirement</th></tr></thead>
+    <tbody>
+      <tr><td>Frontend</td><td>Node.js 18+, npm</td></tr>
+      <tr><td>Backend</td><td>Python 3.10+, pip</td></tr>
+      <tr><td>Database</td><td>SQLite (built-in — no installation needed)</td></tr>
+      <tr><td>LLM provider</td><td>API key for at least one provider (NVIDIA NIM / Groq / Gemini / Azure OpenAI)</td></tr>
+    </tbody>
+  </table>
+
+  <h2 class="section">Optional Evaluation Tools</h2>
+  <p>Install these Python packages to unlock the best-quality security and quality metrics:</p>
+  <table>
+    <thead><tr><th>Package</th><th>What it enables</th></tr></thead>
+    <tbody>
+      <tr><td><code>presidio-analyzer</code></td><td>Real PII detection (names, emails, IDs, phone numbers) — replaces LLM guessing</td></tr>
+      <tr><td><code>detoxify</code></td><td>ML-based toxicity classification — replaces LLM toxicity scoring</td></tr>
+      <tr><td><code>llm-guard</code></td><td>Prompt injection scanning — replaces LLM injection guessing</td></tr>
+      <tr><td><code>deepeval</code></td><td>Structured LLM evaluation metrics — G-Eval, Hallucination, Bias, Answer Relevancy</td></tr>
+      <tr><td><code>ragas</code></td><td>RAG evaluation framework — faithfulness, recall, precision (RAG mode only)</td></tr>
+    </tbody>
+  </table>
+  <div class="box box-yellow">
+    If an optional tool is not installed, METRON skips that metric and records it as "skipped" in the results. The health score is calculated from the metrics that were actually run.
+  </div>
+
+  <h2 class="section">Environment Variables</h2>
+  <table>
+    <thead><tr><th>Variable</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>NVIDIA_NIM_API_KEY</code></td><td>NVIDIA NIM API key</td></tr>
+      <tr><td><code>GROQ_API_KEY</code></td><td>Groq API key</td></tr>
+      <tr><td><code>GEMINI_API_KEY</code></td><td>Google Gemini API key</td></tr>
+      <tr><td><code>AZURE_OPENAI_API_KEY</code></td><td>Azure OpenAI API key</td></tr>
+      <tr><td><code>AZURE_OPENAI_ENDPOINT</code></td><td>Azure OpenAI endpoint URL</td></tr>
+      <tr><td><code>CORS_ORIGINS</code></td><td>Comma-separated list of allowed origins (e.g. your EC2 IP or domain)</td></tr>
+    </tbody>
+  </table>
+
+  <h2 class="section">Starting the Backend</h2>
+  <pre><code>cd metron-unified
+pip install -r requirements.txt
+uvicorn fastapi_server:app --host 0.0.0.0 --port 8000 --reload</code></pre>
+
+  <h2 class="section">Starting the Frontend</h2>
+  <pre><code>cd metron-ai
+npm install
+npm run dev       # development
+npm run build && npm start   # production</code></pre>
+
+  <!-- ──────────────────────────────────────────────────────────────────── -->
+  <h1 class="section page-break" id="glossary"><span class="sec-number">11</span>Glossary</h1>
+
+  <table>
+    <thead><tr><th>Term</th><th>Meaning</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Health Score</strong></td><td>A single 0–100 % rating of overall AI quality, weighted by domain and test class</td></tr>
+      <tr><td><strong>Persona</strong></td><td>A simulated user with a specific role, expertise level, intent, and emotional state used to generate realistic test prompts</td></tr>
+      <tr><td><strong>Fishbone method</strong></td><td>A structured technique for generating personas that cover all combinations of user dimensions (intent × expertise × emotional state)</td></tr>
+      <tr><td><strong>Run</strong></td><td>A single full execution of the METRON test pipeline against one AI endpoint</td></tr>
+      <tr><td><strong>Project</strong></td><td>A named grouping of runs for one AI application — allows tracking progress over time</td></tr>
+      <tr><td><strong>RAG</strong></td><td>Retrieval-Augmented Generation — an AI pattern where the model answers questions using retrieved documents from a knowledge base</td></tr>
+      <tr><td><strong>Ground Truth</strong></td><td>A set of question-answer pairs with known correct answers, used to measure how accurately the AI responds</td></tr>
+      <tr><td><strong>Superset</strong></td><td>The high-level test category a metric belongs to: functional, security, quality, or rag</td></tr>
+      <tr><td><strong>MetricResult</strong></td><td>The output of a single evaluation check — contains the score, pass/fail, reasoning, and taxonomy labels</td></tr>
+      <tr><td><strong>RCA</strong></td><td>Root Cause Analysis — a systematic method to identify why tests failed, using a 133-point taxonomy</td></tr>
+      <tr><td><strong>Taxonomy</strong></td><td>The 133-point classification system for AI failure modes, organized into 8 categories (AI/Model, RAG, Integration, Security, Latency, TPM, Database, Operational)</td></tr>
+      <tr><td><strong>LLM Judge</strong></td><td>Using a language model to evaluate the quality of another language model's response — used when deterministic tools are not available</td></tr>
+      <tr><td><strong>Presidio</strong></td><td>Microsoft's open-source PII (Personal Identifiable Information) detection library</td></tr>
+      <tr><td><strong>Detoxify</strong></td><td>An open-source ML classifier that detects toxic content in text</td></tr>
+      <tr><td><strong>LLM Guard</strong></td><td>An open-source library that scans prompts for injection attempts</td></tr>
+      <tr><td><strong>DeepEval</strong></td><td>An open-source LLM evaluation framework providing metrics like G-Eval, Hallucination, Bias, and Answer Relevancy</td></tr>
+      <tr><td><strong>RAGAS</strong></td><td>An open-source RAG evaluation framework measuring faithfulness, recall, precision, and answer correctness</td></tr>
+      <tr><td><strong>AdvBench</strong></td><td>A research dataset of adversarial harmful prompts used to test AI safety guardrails</td></tr>
+      <tr><td><strong>HarmBench</strong></td><td>A standardized evaluation dataset for AI harm resistance used by AI safety researchers</td></tr>
+      <tr><td><strong>p95 / p99 Latency</strong></td><td>The 95th / 99th percentile response time — meaning 95 % / 99 % of requests respond faster than this value</td></tr>
+      <tr><td><strong>Locust</strong></td><td>An open-source load testing tool used to simulate concurrent users hitting an endpoint</td></tr>
+      <tr><td><strong>LiteLLM</strong></td><td>A unified Python library that provides a single API to call 100+ LLM providers</td></tr>
+      <tr><td><strong>Adapter</strong></td><td>A connector class that translates METRON's internal test format to the specific request format your AI endpoint expects</td></tr>
+    </tbody>
+  </table>
+
+  <hr>
+  <p style="text-align:center; color:#94a3b8; font-size:12px; margin-top:40px;">
+    METRON Technical Documentation — Version 2.0.0 — May 2026<br>
+    Generated automatically from source code analysis.
+  </p>
+
+</div><!-- /container -->
+</body>
+</html>

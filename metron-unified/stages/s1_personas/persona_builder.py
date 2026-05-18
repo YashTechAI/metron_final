@@ -342,17 +342,20 @@ Generate ONE realistic user persona who — without malicious intent — will ex
     {{
       "turn": 1,
       "context": "<what is happening in their {domain} workflow right now>",
-      "prompt": "<LITERAL text they type — must contain real artifacts matching their taxonomy: typos for U02, paste artifacts for U07, mixed language for U08, etc.>"
+      "prompt": "<LITERAL text they type — must contain real artifacts matching their taxonomy: typos for U02, paste artifacts for U07, mixed language for U08, etc.>",
+      "expected_behavior": "<what a correct, complete {domain} system response looks like for this specific prompt — be concrete about the content, not just 'helpful response'>"
     }},
     {{
       "turn": 2,
       "context": "<system gave unhelpful or wrong response>",
-      "prompt": "<LITERAL follow-up — slightly rephrased, more frustrated, different angle>"
+      "prompt": "<LITERAL follow-up — slightly rephrased, more frustrated, different angle>",
+      "expected_behavior": "<what a correct, helpful response to this follow-up should contain — address the rephrased question directly>"
     }},
     {{
       "turn": 3,
       "context": "<they are confused/frustrated and escalating>",
-      "prompt": "<LITERAL final attempt — may include contradictions, more context pasted, or giving-up phrases>"
+      "prompt": "<LITERAL final attempt — may include contradictions, more context pasted, or giving-up phrases>",
+      "expected_behavior": "<what the ideal response to this escalation should include — acknowledge frustration, provide a clear concrete answer or a specific next step>"
     }}
   ],
   "example_prompts": [

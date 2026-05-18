@@ -129,20 +129,26 @@ async def generate_functional_prompts(
     generated: List[GeneratedPrompt] = []
 
     # ── Priority 1: use multi_turn_scenario from rich persona generation ──
-    # These are pre-crafted literal prompts with real artifacts (typos, paste
-    # fragments, mixed languages) — far more diverse than LLM-generated generics.
+    # Turn 1 becomes the conversation starter. Turns 2 and 3 are carried as
+    # scenario_turns so they are replayed in-sequence inside the state machine,
+    # preserving the context-aware follow-up framing they were crafted with.
     if persona.multi_turn_scenario:
-        for turn in persona.multi_turn_scenario[:3]:
-            text = turn.get("prompt", "").strip()
-            if text:
-                generated.append(GeneratedPrompt(
-                    persona_id=persona.persona_id,
-                    test_class=TestClass.FUNCTIONAL,
-                    text=text,
-                    expected_behavior="",
-                    turn_number=turn.get("turn", 1),
-                ))
-        # If scenario gave us prompts, also add example_prompts as additional tests
+        first_turn = persona.multi_turn_scenario[0]
+        first_text = first_turn.get("prompt", "").strip()
+        if first_text:
+            remaining = [
+                t for t in persona.multi_turn_scenario[1:3]
+                if t.get("prompt", "").strip()
+            ]
+            generated.append(GeneratedPrompt(
+                persona_id=persona.persona_id,
+                test_class=TestClass.FUNCTIONAL,
+                text=first_text,
+                expected_behavior=first_turn.get("expected_behavior", ""),
+                turn_number=1,
+                scenario_turns=remaining,
+            ))
+        # entry_points as additional standalone tests (different conversation angles)
         for ep in persona.entry_points[:2]:
             if ep and ep not in {g.text for g in generated}:
                 generated.append(GeneratedPrompt(

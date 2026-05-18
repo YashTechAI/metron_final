@@ -87,12 +87,13 @@ def _check_job_ownership(job: Dict, user_email: str) -> None:
 async def get_providers():
     return {
         name: {
-            "description": info["description"],
-            "rpm":         info["rpm"],
-            "models":      info["models"],
-            "default":     info["default"],
-            "env_key":     info["env_key"],
-            "token_optimize": info.get("token_optimize", False),
+            "description":      info["description"],
+            "rpm":              info["rpm"],
+            "models":           info["models"],
+            "default":          info["default"],
+            "env_key":          info["env_key"],
+            "token_optimize":   info.get("token_optimize", False),
+            "selectable_models": info.get("selectable_models", []),
         }
         for name, info in LLM_PROVIDERS.items()
     }
@@ -190,10 +191,17 @@ async def parse_document_endpoint(req: ParseDocumentRequest, request: Request):
     get_current_user(request)
     if not req.document_text.strip():
         raise HTTPException(400, "document_text is required")
-    if not req.llm_api_key and not _env_key_set(req.llm_provider):
+    if not _has_credentials(req):
         raise HTTPException(400, f"API key required for {req.llm_provider}")
 
-    llm_client = LLMClient(req.llm_provider, req.llm_api_key, azure_endpoint=req.azure_endpoint)
+    llm_client = LLMClient(
+        req.llm_provider, req.llm_api_key,
+        azure_endpoint=req.azure_endpoint,
+        aws_access_key_id=getattr(req, "aws_access_key_id", "") or "",
+        aws_secret_access_key=getattr(req, "aws_secret_access_key", "") or "",
+        aws_region=getattr(req, "aws_region", "") or "",
+        bedrock_model_id=getattr(req, "bedrock_model_id", "") or "",
+    )
     profile = await parse_document(req.document_text, llm_client)
     return {
         "application_type":  profile.application_type.value,
@@ -233,6 +241,8 @@ async def parse_architecture_endpoint(
         raise HTTPException(400, "Provide either text content or an image file")
 
     llm_client = LLMClient(llm_provider, llm_api_key, azure_endpoint=azure_endpoint)
+    # Note: parse_architecture_image endpoint uses direct form params, not a RunConfig.
+    # AWS Bedrock credentials would need dedicated form params if required here.
 
     if image:
         raw_bytes  = await image.read()
@@ -253,10 +263,17 @@ async def preview(req: PreviewRequest, request: Request):
     get_current_user(request)
     if not req.agent_description.strip():
         raise HTTPException(400, "agent_description is required")
-    if not req.llm_api_key and not _env_key_set(req.llm_provider):
+    if not _has_credentials(req):
         raise HTTPException(400, f"API key required for {req.llm_provider}")
 
-    llm_client = LLMClient(req.llm_provider, req.llm_api_key, azure_endpoint=req.azure_endpoint)
+    llm_client = LLMClient(
+        req.llm_provider, req.llm_api_key,
+        azure_endpoint=req.azure_endpoint,
+        aws_access_key_id=getattr(req, "aws_access_key_id", "") or "",
+        aws_secret_access_key=getattr(req, "aws_secret_access_key", "") or "",
+        aws_region=getattr(req, "aws_region", "") or "",
+        bedrock_model_id=getattr(req, "bedrock_model_id", "") or "",
+    )
 
     from stages.s0_profile.document_parser import build_profile_from_config
     profile = build_profile_from_config(
@@ -413,7 +430,7 @@ async def run_tests(
 
     run_config = RunConfig(**config_data)
 
-    if not run_config.llm_api_key and not _env_key_set(run_config.llm_provider):
+    if not _has_credentials(run_config):
         raise HTTPException(400, f"API key required for {run_config.llm_provider}")
 
     # Read uploaded document
@@ -686,7 +703,25 @@ async def delete_project(project_id: str, request: Request):
     return {"ok": True}
 
 
-# ── Helper ─────────────────────────────────────────────────────────────────
+# ── Helpers ────────────────────────────────────────────────────────────────
 def _env_key_set(provider_name: str) -> bool:
     env_key = LLM_PROVIDERS.get(provider_name, {}).get("env_key", "")
     return bool(env_key and os.environ.get(env_key))
+
+
+def _has_credentials(req) -> bool:
+    """Return True when the request carries sufficient credentials for its provider.
+
+    AWS Bedrock uses aws_access_key_id/aws_secret_access_key instead of llm_api_key,
+    so we accept either inline AWS creds or the usual API-key / env-var path.
+    """
+    provider = getattr(req, "llm_provider", "") or ""
+    if "bedrock" in provider.lower() or "aws" in provider.lower():
+        inline_aws = bool(
+            getattr(req, "aws_access_key_id", "") and
+            getattr(req, "aws_secret_access_key", "")
+        )
+        return inline_aws or bool(
+            os.environ.get("AWS_ACCESS_KEY_ID") and os.environ.get("AWS_SECRET_ACCESS_KEY")
+        )
+    return bool(getattr(req, "llm_api_key", "")) or _env_key_set(provider)

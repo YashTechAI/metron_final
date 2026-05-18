@@ -114,7 +114,14 @@ async def run_pipeline(
     # Acquire the concurrency slot — released in the finally block below
     await _pipeline_sem.acquire()
     job_store[run_id]["status"] = "running"
-    llm_client = LLMClient(config.llm_provider, config.llm_api_key, azure_endpoint=config.azure_endpoint)
+    llm_client = LLMClient(
+        config.llm_provider, config.llm_api_key,
+        azure_endpoint=config.azure_endpoint,
+        aws_access_key_id=getattr(config, "aws_access_key_id", "") or "",
+        aws_secret_access_key=getattr(config, "aws_secret_access_key", "") or "",
+        aws_region=getattr(config, "aws_region", "") or "",
+        bedrock_model_id=getattr(config, "bedrock_model_id", "") or "",
+    )
 
     try:
         # ── Stage 0: App Profile ───────────────────────────────────────────

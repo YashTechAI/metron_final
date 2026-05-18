@@ -62,6 +62,26 @@ LLM_PROVIDERS: Dict[str, Dict[str, Any]] = {
         "description": "Fast | 60 RPM | 1M tokens/day free",
         "token_optimize": False,
     },
+    "AWS Bedrock": {
+        "prefix": "bedrock",
+        "models": {
+            "fast":     "bedrock/anthropic.claude-3-5-haiku-20241022-v1:0",
+            "judge":    "bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0",
+            "balanced": "bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0",
+        },
+        "default": "bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0",
+        "env_key": "AWS_ACCESS_KEY_ID",
+        "rpm": 50,
+        "description": "AWS Bedrock | 50 RPM | Pay per token",
+        "token_optimize": False,
+        "selectable_models": [
+            "anthropic.claude-haiku-4-5-20251001",
+            "anthropic.claude-3-5-haiku-20241022-v1:0",
+            "anthropic.claude-3-5-sonnet-20241022-v2:0",
+            "amazon.nova-pro-v1:0",
+            "amazon.nova-lite-v1:0",
+        ],
+    },
 }
 
 # Auto-fallback chain when primary provider hits 429 / quota exhaustion

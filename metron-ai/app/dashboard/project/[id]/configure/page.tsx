@@ -23,6 +23,7 @@ interface Provider {
   models: Record<string, string>;
   default: string;
   env_key: string;
+  selectable_models?: string[];
 }
 
 export default function ConfigurePage() {
@@ -37,6 +38,7 @@ export default function ConfigurePage() {
   const [authType, setAuthType] = useState<"none" | "bearer">("none");
   const [authToken, setAuthToken] = useState("");
   const [requestTemplate, setRequestTemplate] = useState("");
+  const [sessionMode, setSessionMode] = useState<"session_id" | "history_injection" | "messages_array" | "none">("session_id");
   const [responseTrimMarker, setResponseTrimMarker] = useState("");
   const [connectionStatus, setConnectionStatus] = useState<"idle" | "testing" | "ok" | "fail">("idle");
   const [connectionMsg, setConnectionMsg] = useState("");
@@ -64,6 +66,10 @@ export default function ConfigurePage() {
   const [llmProvider, setLlmProvider] = useState("NVIDIA NIM");
   const [llmApiKey, setLlmApiKey] = useState("");
   const [azureEndpoint, setAzureEndpoint] = useState("");
+  const [awsAccessKeyId, setAwsAccessKeyId] = useState("");
+  const [awsSecretAccessKey, setAwsSecretAccessKey] = useState("");
+  const [awsRegion, setAwsRegion] = useState("us-east-1");
+  const [bedrockModelId, setBedrockModelId] = useState("anthropic.claude-haiku-4-5-20251001");
 
   // Security
   const [selectedAttacks, setSelectedAttacks] = useState<string[]>(["jailbreak", "prompt_injection", "pii_extraction", "toxicity", "encoding"]);
@@ -154,6 +160,7 @@ export default function ConfigurePage() {
           auth_type: authType,
           auth_token: authToken,
           request_template: requestTemplate || null,
+          session_mode: sessionMode,
           response_trim_marker: responseTrimMarker || null,
         }),
       });
@@ -247,6 +254,7 @@ export default function ConfigurePage() {
       auth_type: authType,
       auth_token: authToken,
       request_template: requestTemplate || null,
+      session_mode: sessionMode,
       response_trim_marker: responseTrimMarker || null,
       agent_name: agentName,
       agent_domain: agentDomain,
@@ -263,6 +271,10 @@ export default function ConfigurePage() {
       llm_provider: llmProvider,
       llm_api_key: llmApiKey,
       azure_endpoint: azureEndpoint,
+      aws_access_key_id: awsAccessKeyId,
+      aws_secret_access_key: awsSecretAccessKey,
+      aws_region: awsRegion,
+      bedrock_model_id: bedrockModelId,
       selected_attacks: selectedAttacks,
       attacks_per_category: attacksPerCategory,
       ragas_metrics: ragasMetrics,
@@ -303,6 +315,10 @@ export default function ConfigurePage() {
             llm_provider: llmProvider,
             llm_api_key: llmApiKey,
             azure_endpoint: azureEndpoint,
+            aws_access_key_id: awsAccessKeyId,
+            aws_secret_access_key: awsSecretAccessKey,
+            aws_region: awsRegion,
+            bedrock_model_id: bedrockModelId,
           }),
         });
         if (res.ok) {
@@ -409,7 +425,26 @@ export default function ConfigurePage() {
                 onChange={(e) => setRequestTemplate(e.target.value)}
               />
               <p className="text-[10px] text-[var(--color-on-surface-variant)] opacity-50 mt-1">
-                Full JSON body. Use <code>{"{{query}}"}</code> for the message, <code>{"{{uuid}}"}</code> for a per-request UUID, <code>{"{{conversation_id}}"}</code> for a per-conversation UUID (stable across multi-turn).
+                Full JSON body. Use <code>{"{{query}}"}</code> for the message, <code>{"{{uuid}}"}</code> for a per-request UUID, <code>{"{{conversation_id}}"}</code> for a per-conversation UUID (stable across multi-turn){sessionMode === "history_injection" ? <>, <code>{"{{history}}"}</code> for prior turns injected as text</> : null}.
+              </p>
+            </Field>
+            <Field label="Session Mode">
+              <select
+                className="input-field"
+                aria-label="Session Mode"
+                value={sessionMode}
+                onChange={(e) => setSessionMode(e.target.value as typeof sessionMode)}
+              >
+                <option value="session_id">Session ID — server tracks memory (use {"{{conversation_id}}"})</option>
+                <option value="history_injection">History Injection — METRON sends prior turns as text (use {"{{history}}"})</option>
+                <option value="messages_array">Messages Array — OpenAI-style messages list sent per turn</option>
+                <option value="none">None — stateless, each turn sent independently</option>
+              </select>
+              <p className="text-[10px] text-[var(--color-on-surface-variant)] opacity-50 mt-1">
+                {sessionMode === "session_id" && "Server maintains memory. Add {{conversation_id}} in your request template as a session key."}
+                {sessionMode === "history_injection" && "Agent is stateless. Add {{history}} in your request template — METRON fills it with all prior turns as formatted text."}
+                {sessionMode === "messages_array" && "Agent accepts an OpenAI-style messages array. Set Response Field to the array key name."}
+                {sessionMode === "none" && "Each turn is sent as a fresh request with no history. Use for purely stateless endpoint testing."}
               </p>
             </Field>
             <Field label="Response Trim Marker (optional)">
@@ -676,7 +711,7 @@ export default function ConfigurePage() {
               <select className="input-field" aria-label="Provider" value={llmProvider} onChange={(e) => setLlmProvider(e.target.value)}>
                 {Object.keys(providers).length > 0
                   ? Object.keys(providers).map((p) => <option key={p}>{p}</option>)
-                  : ["NVIDIA NIM", "Groq", "Google Gemini", "Azure OpenAI"].map((p) => <option key={p}>{p}</option>)}
+                  : ["NVIDIA NIM", "Groq", "Google Gemini", "Azure OpenAI", "AWS Bedrock"].map((p) => <option key={p}>{p}</option>)}
               </select>
             </Field>
             {providerInfo && (
@@ -687,15 +722,17 @@ export default function ConfigurePage() {
             )}
           </div>
           <div className="space-y-4">
-            <Field label="API Key">
-              <input
-                className="input-field"
-                type="password"
-                placeholder="Enter your API key (or set env variable)"
-                value={llmApiKey}
-                onChange={(e) => setLlmApiKey(e.target.value)}
-              />
-            </Field>
+            {llmProvider !== "AWS Bedrock" && (
+              <Field label="API Key">
+                <input
+                  className="input-field"
+                  type="password"
+                  placeholder="Enter your API key (or set env variable)"
+                  value={llmApiKey}
+                  onChange={(e) => setLlmApiKey(e.target.value)}
+                />
+              </Field>
+            )}
             {llmProvider === "Azure OpenAI" && (
               <Field label="Azure Endpoint URL">
                 <input
@@ -707,10 +744,65 @@ export default function ConfigurePage() {
                 />
               </Field>
             )}
-            {providerInfo && (
+            {llmProvider === "AWS Bedrock" && (
+              <>
+                <Field label="AWS Access Key ID">
+                  <input
+                    className="input-field"
+                    type="password"
+                    placeholder="AKIA..."
+                    value={awsAccessKeyId}
+                    onChange={(e) => setAwsAccessKeyId(e.target.value)}
+                  />
+                </Field>
+                <Field label="AWS Secret Access Key">
+                  <input
+                    className="input-field"
+                    type="password"
+                    placeholder="your_secret_key"
+                    value={awsSecretAccessKey}
+                    onChange={(e) => setAwsSecretAccessKey(e.target.value)}
+                  />
+                </Field>
+                <Field label="AWS Region">
+                  <input
+                    className="input-field"
+                    type="text"
+                    placeholder="us-east-1"
+                    value={awsRegion}
+                    onChange={(e) => setAwsRegion(e.target.value)}
+                  />
+                </Field>
+                <Field label="Bedrock Model">
+                  <select
+                    className="input-field"
+                    aria-label="Bedrock Model"
+                    value={bedrockModelId}
+                    onChange={(e) => setBedrockModelId(e.target.value)}
+                  >
+                    {(providers["AWS Bedrock"]?.selectable_models ?? [
+                      "anthropic.claude-haiku-4-5-20251001",
+                      "anthropic.claude-3-5-haiku-20241022-v1:0",
+                      "anthropic.claude-3-5-sonnet-20241022-v2:0",
+                      "amazon.nova-pro-v1:0",
+                      "amazon.nova-lite-v1:0",
+                    ]).map((m) => (
+                      <option key={m} value={m}>{m}</option>
+                    ))}
+                  </select>
+                </Field>
+              </>
+            )}
+            {providerInfo && llmProvider !== "AWS Bedrock" && (
               <div className="p-3 rounded-xl bg-[var(--color-surface-variant)] space-y-1">
                 <p className="text-xs text-[var(--color-on-surface-variant)] opacity-60">Default model</p>
                 <p className="text-xs font-mono font-semibold text-[var(--color-on-surface)]">{providerInfo.default}</p>
+              </div>
+            )}
+            {llmProvider === "AWS Bedrock" && (
+              <div className="p-3 rounded-xl bg-[var(--color-surface-variant)] space-y-1">
+                <p className="text-xs text-[var(--color-on-surface-variant)] opacity-60">Selected model</p>
+                <p className="text-xs font-mono font-semibold text-[var(--color-on-surface)]">bedrock/{bedrockModelId}</p>
               </div>
             )}
           </div>

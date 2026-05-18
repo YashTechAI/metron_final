@@ -45,6 +45,7 @@ class ChatbotAdapter:
         timeout:              int = 30,
         request_template:     Optional[str] = None,
         response_trim_marker: Optional[str] = None,
+        session_mode:         str = "session_id",
     ):
         self.endpoint_url         = endpoint_url
         self.request_field        = request_field
@@ -52,11 +53,26 @@ class ChatbotAdapter:
         self.timeout              = timeout
         self.request_template     = request_template
         self.response_trim_marker = response_trim_marker
+        self.session_mode         = session_mode
         self.headers: Dict[str, str] = {"Content-Type": "application/json"}
         if auth_type == "bearer" and auth_token:
             self.headers["Authorization"] = f"Bearer {auth_token}"
 
-    def _build_payload(self, message: str, conversation_id: str) -> dict:
+    def _build_payload(
+        self,
+        message: str,
+        conversation_id: str,
+        history: Optional[List[Dict]] = None,
+    ) -> dict:
+        history = history or []
+        mode = self.session_mode
+
+        # messages_array: build OpenAI-style list; template is irrelevant in this mode.
+        if mode == "messages_array":
+            messages = list(history)   # [{"role": "user"/"assistant", "content": "..."}]
+            messages.append({"role": "user", "content": message})
+            return {self.request_field: messages}
+
         if self.request_template:
             # json.dumps escapes newlines, tabs, quotes etc; strip outer quotes to get bare escaped string
             escaped = json.dumps(message)[1:-1]
@@ -66,8 +82,25 @@ class ChatbotAdapter:
                 .replace("{{uuid}}", str(_uuid_mod.uuid4()))
                 .replace("{{conversation_id}}", conversation_id or str(_uuid_mod.uuid4()))
             )
+            if mode == "history_injection" and "{{history}}" in body_str:
+                # Escape the history string so it safely embeds inside the JSON template.
+                history_escaped = json.dumps(self._build_history_string(history))[1:-1]
+                body_str = body_str.replace("{{history}}", history_escaped)
             return json.loads(body_str)
+
+        # No template — plain single-field payload.
+        if mode == "history_injection" and history:
+            history_str = self._build_history_string(history)
+            return {self.request_field: f"{history_str}\nUser: {message}"}
         return {self.request_field: message}
+
+    @staticmethod
+    def _build_history_string(history: List[Dict]) -> str:
+        lines = []
+        for turn in history:
+            role = "User" if turn.get("role") == "user" else "Assistant"
+            lines.append(f"{role}: {turn.get('content', '')}")
+        return "\n".join(lines)
 
     def _trim_response(self, text: str) -> str:
         if self.response_trim_marker and self.response_trim_marker in text:
@@ -80,7 +113,7 @@ class ChatbotAdapter:
         history: Optional[List] = None,
         conversation_id: str = "",
     ) -> AdapterResponse:
-        payload = self._build_payload(message, conversation_id)
+        payload = self._build_payload(message, conversation_id, history)
         start = time.monotonic()
         try:
             async with aiohttp.ClientSession() as session:

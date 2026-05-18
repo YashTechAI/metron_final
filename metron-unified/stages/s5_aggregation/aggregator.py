@@ -230,7 +230,7 @@ def _weighted_health(
     for cls_name, summary in test_classes.items():
         w = weights.get(cls_name, 0.0)
         if w > 0:
-            weighted_sum += summary.avg_score * w
+            weighted_sum += summary.pass_rate * w
             total_weight += w
     return weighted_sum / total_weight if total_weight > 0 else 0.0
 
