@@ -90,6 +90,8 @@ def make_deepeval_azure_model():
                 azure_endpoint=self._base_url,
                 api_key=self._api_key,
                 api_version=self._api_version,
+                timeout=45.0,
+                max_retries=0,
             )
 
         def generate(self, prompt: str) -> str:

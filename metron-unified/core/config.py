@@ -31,9 +31,9 @@ LLM_PROVIDERS: Dict[str, Dict[str, Any]] = {
         "default": "azure/gpt-4o",
         "env_key": "AZURE_OPENAI_API_KEY",
         "endpoint_key": "AZURE_OPENAI_ENDPOINT",
-        "rpm": 2700,
-        "tpm": 450000,
-        "description": "Azure GPT-4o | 2700 RPM | 450K TPM",
+        "rpm": 300,
+        "tpm": 50000,
+        "description": "Azure GPT-4o | 300 RPM | 50K TPM",
         "token_optimize": True,   # compact prompts — stay within 50K TPM
     },
     "Groq": {
@@ -52,11 +52,11 @@ LLM_PROVIDERS: Dict[str, Dict[str, Any]] = {
     "Google Gemini": {
         "prefix": "gemini",
         "models": {
-            "fast":     "gemini/gemini-2.5-flash",
-            "judge":    "gemini/gemini-2.5-flash",
-            "balanced": "gemini/gemini-2.5-flash",
+            "fast":     "gemini/gemini-2.0-flash",
+            "judge":    "gemini/gemini-2.0-flash",
+            "balanced": "gemini/gemini-2.0-flash",
         },
-        "default": "gemini/gemini-2.5-flash",
+        "default": "gemini/gemini-2.0-flash",
         "env_key": "GEMINI_API_KEY",
         "rpm": 60,
         "description": "Fast | 60 RPM | 1M tokens/day free",
