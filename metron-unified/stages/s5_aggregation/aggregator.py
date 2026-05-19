@@ -188,7 +188,7 @@ def _summarize(results: List[MetricResult]) -> ClassSummary:
         if t > 0 and sk / t > 0.5:
             evaluation_warnings.append(
                 f"Over 50% of '{mn}' evaluations were skipped due to API errors "
-                f"({sk}/{t}) — results unreliable. Check Azure rate limits."
+                f"({sk}/{t}) — results unreliable. Check API credentials/rate limits for your configured provider."
             )
 
     # Top 5 failures (non-skipped only)
@@ -230,7 +230,7 @@ def _weighted_health(
     for cls_name, summary in test_classes.items():
         w = weights.get(cls_name, 0.0)
         if w > 0:
-            weighted_sum += summary.avg_score * w
+            weighted_sum += summary.pass_rate * w
             total_weight += w
     return weighted_sum / total_weight if total_weight > 0 else 0.0
 

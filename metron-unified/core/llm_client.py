@@ -23,7 +23,8 @@ from .config import (
     get_model, resolve_api_key, should_optimize_tokens, get_token_budget,
 )
 
-litellm.set_verbose = False
+litellm.set_verbose = True
+litellm._turn_on_debug()
 
 
 # ── Rate Limiter ───────────────────────────────────────────────────────────
@@ -74,10 +75,23 @@ class LLMClient:
     # How long (seconds) before a rate-exhausted model is retried.
     _EXHAUSTION_COOLDOWN_S: float = 300.0   # 5 minutes
 
-    def __init__(self, provider_name: str = "Groq", api_key: str = "", azure_endpoint: str = ""):
+    def __init__(
+        self,
+        provider_name: str = "Groq",
+        api_key: str = "",
+        azure_endpoint: str = "",
+        aws_access_key_id: str = "",
+        aws_secret_access_key: str = "",
+        aws_region: str = "",
+        bedrock_model_id: str = "",
+    ):
         self.provider_name = provider_name
         self.api_key = resolve_api_key(provider_name, api_key)
         self.azure_endpoint = azure_endpoint.strip()
+        self.aws_access_key_id = aws_access_key_id.strip()
+        self.aws_secret_access_key = aws_secret_access_key.strip()
+        self.aws_region = aws_region.strip() or "us-east-1"
+        self.bedrock_model_id = bedrock_model_id.strip()
         if provider_name not in LLM_PROVIDERS:
             print(f"[LLMClient] WARNING: Unknown provider '{provider_name}', falling back to Groq. "
                   f"Known providers: {list(LLM_PROVIDERS.keys())}")
@@ -104,27 +118,11 @@ class LLMClient:
                                           "large" if len(prompt) > 2000 else "normal")
 
         primary_model = get_model(self.provider_name, task)
+        # User-specified Bedrock model overrides the provider default
+        if self.bedrock_model_id and self.provider_name == "AWS Bedrock":
+            primary_model = f"bedrock/{self.bedrock_model_id}"
 
-        # Build cross-provider fallback chain: static FALLBACK_CHAIN first,
-        # then one balanced model from each other configured provider whose
-        # API key is available in the environment.
-        # Only include a fallback model if its provider actually has a usable key —
-        # avoids cascading "Invalid API Key" errors when the user picked a specific
-        # provider and no other keys are set in the environment.
-        static_fallbacks = [
-            m for m in FALLBACK_CHAIN
-            if m != primary_model and self._has_key_for_model(m)
-        ]
-        cross_provider = []
-        for pname, pinfo in LLM_PROVIDERS.items():
-            if pname == self.provider_name:
-                continue
-            env_key = pinfo.get("env_key", "")
-            if env_key and os.environ.get(env_key):
-                cross_provider.append(pinfo["models"]["balanced"])
-        candidates = [primary_model] + static_fallbacks + [
-            m for m in cross_provider if m not in static_fallbacks and m != primary_model
-        ]
+        candidates = [primary_model]
 
         now = time.monotonic()
         last_error: Exception = RuntimeError("No models available")
@@ -144,7 +142,7 @@ class LLMClient:
                 except litellm.exceptions.RateLimitError as e:
                     last_error = e
                     msg = str(e).lower()
-                    if "quota" in msg or "resource_exhausted" in msg or "generaterequeststsperday" in msg.replace(" ", ""):
+                    if "quota" in msg or "resource_exhausted" in msg or "too_many_requests" in msg or "generaterequeststsperday" in msg.replace(" ", ""):
                         self._exhausted[model] = time.monotonic()
                         break   # skip retries, try next model
                     wait = self._parse_retry_after(str(e))
@@ -161,6 +159,12 @@ class LLMClient:
                         self._exhausted[model] = time.monotonic()
                         break
                     raise   # real bad request — propagate
+                except asyncio.TimeoutError as e:
+                    last_error = RuntimeError(f"LLM call timed out after 45s (model={model})")
+                    if attempt < 2:
+                        await asyncio.sleep(2 ** attempt + random.uniform(0, 1))
+                    else:
+                        break
                 except Exception as e:
                     last_error = e
                     if attempt < 2:
@@ -241,8 +245,17 @@ class LLMClient:
             kwargs["api_key"] = self.api_key if "groq" in self.provider_name.lower() else os.environ.get("GROQ_API_KEY", "")
         elif prefix == "gemini":
             kwargs["api_key"] = self.api_key if "gemini" in self.provider_name.lower() else os.environ.get("GEMINI_API_KEY", "")
+        elif prefix == "bedrock":
+            aws_key    = self.aws_access_key_id    or os.environ.get("AWS_ACCESS_KEY_ID", "")
+            aws_secret = self.aws_secret_access_key or os.environ.get("AWS_SECRET_ACCESS_KEY", "")
+            aws_region = self.aws_region            or os.environ.get("AWS_DEFAULT_REGION", "us-east-1")
+            if aws_key:
+                kwargs["aws_access_key_id"] = aws_key
+            if aws_secret:
+                kwargs["aws_secret_access_key"] = aws_secret
+            kwargs["aws_region_name"] = aws_region
 
-        response = await litellm.acompletion(**kwargs)
+        response = await asyncio.wait_for(litellm.acompletion(**kwargs), timeout=45)
         return response.choices[0].message.content or ""
 
     @staticmethod

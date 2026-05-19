@@ -30,7 +30,7 @@ dist/
 downloads/
 eggs/
 .eggs/
-lib/
+# lib/
 lib64/
 parts/
 sdist/
@@ -86,3 +86,5 @@ build/
 .DS_Store
 *.swp
 *.swo
+# Added by code-review-graph
+.code-review-graph/

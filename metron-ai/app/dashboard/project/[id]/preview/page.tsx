@@ -61,7 +61,7 @@ export default function PreviewPage() {
     // Fetch tool status with timeout — slow package imports can block the backend
     const toolsController = new AbortController();
     const toolsTimeout = setTimeout(() => toolsController.abort(), 6000);
-    fetch(`${API}/api/tools/status`, { signal: toolsController.signal })
+    authFetch(`${API}/api/tools/status`, { signal: toolsController.signal })
       .then((r) => r.json())
       .then((data) => { clearTimeout(toolsTimeout); setToolStatus(data); })
       .catch(() => { clearTimeout(toolsTimeout); setToolStatus({}); });
@@ -113,6 +113,10 @@ export default function PreviewPage() {
         llm_provider: cfg.llm_provider,
         llm_api_key: cfg.llm_api_key,
         azure_endpoint: cfg.azure_endpoint || "",
+        aws_access_key_id: cfg.aws_access_key_id || "",
+        aws_secret_access_key: cfg.aws_secret_access_key || "",
+        aws_region: cfg.aws_region || "",
+        bedrock_model_id: cfg.bedrock_model_id || "",
         application_type: cfg.application_type || "chatbot",
         selected_attacks: cfg.selected_attacks,
         attacks_per_category: cfg.attacks_per_category,

@@ -102,7 +102,7 @@ def _get_adapter(config: RunConfig) -> object:
     elif config.application_type == ApplicationType.FORM:
         return FormAdapter(**kwargs)
     else:
-        return ChatbotAdapter(**kwargs)
+        return ChatbotAdapter(**kwargs, session_mode=getattr(config, "session_mode", "session_id"))
 
 
 async def run_conversation(
@@ -137,17 +137,29 @@ async def run_conversation(
     current_state = ConversationState.SEEKING
     current_message = prompt.text   # Start with the generated prompt
     history_lines: List[str] = []
+    # Pre-crafted follow-up turns from multi_turn_scenario (turns 2+).
+    # Replayed in order inside the state machine before dynamic generation kicks in.
+    scenario_turns = list(getattr(prompt, 'scenario_turns', []))
+    scenario_idx = 0
+    next_expected_behavior: Optional[str] = None
 
     conv_id = conversation.conversation_id
 
     for turn_num in range(1, max_turns + 1):
+        # Build structured history from all turns completed so far.
+        # Empty on turn 1; grows each turn. Used by history_injection and messages_array modes.
+        adapter_history = []
+        for t in conversation.turns:
+            adapter_history.append({"role": "user",      "content": t.query})
+            adapter_history.append({"role": "assistant",  "content": t.response})
+
         # Send to adapter — retry with exponential backoff on 429 (endpoint rate limit)
-        resp: AdapterResponse = await adapter.send(current_message, conversation_id=conv_id)
+        resp: AdapterResponse = await adapter.send(current_message, history=adapter_history, conversation_id=conv_id)
         if resp.error and "429" in str(resp.error):
             for _retry_attempt in range(3):
                 _wait = 2 ** (_retry_attempt + 1)   # 2s, 4s, 8s
                 await asyncio.sleep(_wait)
-                resp = await adapter.send(current_message, conversation_id=conv_id)
+                resp = await adapter.send(current_message, history=adapter_history, conversation_id=conv_id)
                 if not (resp.error and "429" in str(resp.error)):
                     break
         latency_ms = resp.latency_ms
@@ -179,7 +191,7 @@ async def run_conversation(
             query=current_message,
             response=resp.text if resp.ok else f"[Error: {resp.error}]",
             latency_ms=latency_ms,
-            expected_behavior=prompt.expected_behavior if turn_num == 1 else None,
+            expected_behavior=prompt.expected_behavior if turn_num == 1 else next_expected_behavior,
             expected_answer=prompt.expected_answer if turn_num == 1 else None,
             retrieved_context=effective_context,
             agent_trace=resp.agent_trace,
@@ -188,6 +200,7 @@ async def run_conversation(
             timestamp=datetime.utcnow(),
         )
         conversation.turns.append(turn)
+        next_expected_behavior = None  # consumed by this turn
         conversation.total_latency_ms += latency_ms
 
         history_lines.append(f"User: {current_message}")
@@ -210,6 +223,17 @@ async def run_conversation(
             if is_error:
                 conversation.goal_achieved = False
             break
+
+        # Pre-crafted scenario turns: replay in order before falling back to dynamic generation.
+        # Skips the state-machine LLM call for transitions where the next message is pre-crafted.
+        if scenario_idx < len(scenario_turns):
+            next_scenario = scenario_turns[scenario_idx]
+            scenario_idx += 1
+            next_text = next_scenario.get("prompt", "").strip()
+            if next_text:
+                current_message = next_text
+                next_expected_behavior = next_scenario.get("expected_behavior") or None
+                continue  # skip _combined_eval_generate; resume loop with pre-crafted message
 
         # Combined eval+generate for subsequent turns
         next_msg, new_state, response_type, goal_achieved = await _combined_eval_generate(
