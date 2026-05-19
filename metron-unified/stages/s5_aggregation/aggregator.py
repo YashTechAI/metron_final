@@ -188,7 +188,7 @@ def _summarize(results: List[MetricResult]) -> ClassSummary:
         if t > 0 and sk / t > 0.5:
             evaluation_warnings.append(
                 f"Over 50% of '{mn}' evaluations were skipped due to API errors "
-                f"({sk}/{t}) — results unreliable. Check Azure rate limits."
+                f"({sk}/{t}) — results unreliable. Check API credentials/rate limits for your configured provider."
             )
 
     # Top 5 failures (non-skipped only)

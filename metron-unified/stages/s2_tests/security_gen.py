@@ -292,12 +292,14 @@ def _extract_playbook_prompts(persona: Persona) -> list[GeneratedPrompt]:
     for step in persona.playbook_steps[:5]:
         _add(step.get("content", ""), step.get("expected_safe_response", ""))
 
-    # Conversation trajectory — include high-value attack turns
-    # "boundary_testing"/"escalation" are the current names; old names kept for DB-stored personas
+    # Conversation trajectory — include high-value boundary-pushing turns.
+    # New names (from rewritten persona_builder): scope_expansion, direct_request, alternative_angle
+    # Legacy names (from DB-stored personas): payload_delivery, exfiltration, boundary_testing, escalation
     for turn in persona.attack_trajectory:
         if turn.get("intent", "") in (
             "payload_delivery", "exfiltration", "exfiltration_or_persistence", "context_manipulation",
             "boundary_testing", "escalation",
+            "scope_expansion", "direct_request", "alternative_angle",
         ):
             _add(turn.get("prompt", ""))
 

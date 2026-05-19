@@ -192,7 +192,7 @@ def make_deepeval_model(config=None):
 
     Dispatch:
       Azure      → make_deepeval_azure_model() (native AzureOpenAI client, unchanged)
-      Gemini     → LiteLLM wrapper (gemini/gemini-2.5-flash)
+      Gemini     → LiteLLM wrapper (model from config, e.g. gemini/gemini-2.0-flash)
       AWS Bedrock→ LiteLLM wrapper (bedrock/claude-3-5-sonnet) + AWS credentials
       Others     → LiteLLM wrapper (Groq / NIM) with provider API key
 
@@ -210,8 +210,10 @@ def make_deepeval_model(config=None):
         api_key = getattr(config, "llm_api_key", "") or os.environ.get("GEMINI_API_KEY", "")
         if not api_key:
             return None
+        from core.config import get_model
+        model_name = get_model(getattr(config, "llm_provider", "Google Gemini"), "judge")
         return _make_deepeval_litellm_model(
-            "gemini/gemini-2.5-flash",
+            model_name,
             {"api_key": api_key},
         )
 
