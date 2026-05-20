@@ -85,7 +85,7 @@ export default function LoginPage() {
           console.warn("[Login] Tokens not found after waiting; proceeding anyway (will be stored soon)");
         }
 
-        // Set session cookie so the middleware (proxy.ts) allows /dashboard access
+        // Set session cookie so the middleware (middleware.ts) allows /dashboard access
         document.cookie = "metron_session=1; path=/; SameSite=Lax";
 
         setLoading(false);

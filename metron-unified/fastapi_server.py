@@ -623,6 +623,113 @@ async def compare_runs(run_id_a: str, run_id_b: str, request: Request):
 
 
 # ──────────────────────────────────────────────────────────────────────────
+# GET /api/project/{project_id}/trend — MLflow health & cost trend
+# ──────────────────────────────────────────────────────────────────────────
+@app.get("/api/project/{project_id}/trend")
+async def get_project_trend(project_id: str, request: Request, limit: int = 30):
+    """Return time-series trend data for a project from MLflow."""
+    user = get_current_user(request)
+    project = _db.get_project(project_id)
+    if not project:
+        raise HTTPException(404, "Project not found")
+    if project.get("user_email") != user["email"]:
+        raise HTTPException(403, "Not your project")
+
+    mlflow_uri = os.environ.get("MLFLOW_TRACKING_URI", "")
+    if not mlflow_uri:
+        return {"project_id": project_id, "trend": [], "mlflow_enabled": False}
+
+    try:
+        import mlflow
+        from mlflow.tracking import MlflowClient
+        mlflow.set_tracking_uri(mlflow_uri)
+        client = MlflowClient()
+        experiment = client.get_experiment_by_name(f"project-{project_id}")
+        if not experiment:
+            return {"project_id": project_id, "trend": [], "mlflow_enabled": True}
+
+        runs = client.search_runs(
+            experiment_ids=[experiment.experiment_id],
+            filter_string=f"tags.project_id = '{project_id}'",
+            order_by=["start_time ASC"],
+            max_results=limit,
+        )
+
+        trend = []
+        for run in runs:
+            m = run.data.metrics
+            tags = run.data.tags
+            trend.append({
+                "run_id":             run.data.tags.get("mlflow.runName", run.info.run_id),
+                "mlflow_run_id":      run.info.run_id,
+                "timestamp":          run.info.start_time,
+                "health_score":       m.get("health_score"),
+                "p95_latency_ms":     m.get("p95_latency_ms"),
+                "tokens_input":       m.get("tokens_input"),
+                "tokens_output":      m.get("tokens_output"),
+                "cost_usd":           m.get("estimated_cost_usd"),
+                "regression_detected": tags.get("regression_detected") == "True",
+                "prompt_changed":     tags.get("prompt_changed") == "True",
+                "prompt_hash":        run.data.params.get("prompt_hash", ""),
+            })
+
+        return {"project_id": project_id, "trend": trend, "mlflow_enabled": True}
+    except Exception as e:
+        raise HTTPException(500, f"MLflow query error: {e}")
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# GET /api/project/{project_id}/runs/{run_id}/cost — per-run token & cost
+# ──────────────────────────────────────────────────────────────────────────
+@app.get("/api/project/{project_id}/runs/{run_id}/cost")
+async def get_run_cost(project_id: str, run_id: str, request: Request):
+    """Return token usage and cost for a single run from MLflow."""
+    user = get_current_user(request)
+    project = _db.get_project(project_id)
+    if not project:
+        raise HTTPException(404, "Project not found")
+    if project.get("user_email") != user["email"]:
+        raise HTTPException(403, "Not your project")
+
+    mlflow_uri = os.environ.get("MLFLOW_TRACKING_URI", "")
+    if not mlflow_uri:
+        return {"run_id": run_id, "mlflow_enabled": False}
+
+    try:
+        import mlflow
+        from mlflow.tracking import MlflowClient
+        mlflow.set_tracking_uri(mlflow_uri)
+        client = MlflowClient()
+        experiment = client.get_experiment_by_name(f"project-{project_id}")
+        if not experiment:
+            raise HTTPException(404, "No MLflow experiment for this project")
+
+        # Find the MLflow run whose tag mlflow.runName matches our run_id
+        runs = client.search_runs(
+            experiment_ids=[experiment.experiment_id],
+            filter_string=f"tags.`mlflow.runName` = '{run_id}'",
+            max_results=1,
+        )
+        if not runs:
+            raise HTTPException(404, "Run not found in MLflow")
+
+        m = runs[0].data.metrics
+        return {
+            "run_id":            run_id,
+            "mlflow_run_id":     runs[0].info.run_id,
+            "tokens_input":      m.get("tokens_input", 0),
+            "tokens_output":     m.get("tokens_output", 0),
+            "total_tokens":      int(m.get("tokens_input", 0)) + int(m.get("tokens_output", 0)),
+            "estimated_cost_usd": m.get("estimated_cost_usd", 0.0),
+            "mlflow_enabled":    True,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, f"MLflow query error: {e}")
+
+
+# ──────────────────────────────────────────────────────────────────────────
 # Auth endpoints — login/logout handled by AWS Cognito on the frontend.
 # /api/auth/me validates the Cognito Bearer token and returns the caller's email.
 # ──────────────────────────────────────────────────────────────────────────

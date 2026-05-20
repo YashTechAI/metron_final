@@ -62,6 +62,11 @@ def init_db() -> None:
             except Exception:
                 pass  # column already exists
             conn.execute("CREATE INDEX IF NOT EXISTS idx_runs_user ON runs(user_email)")
+            # Migration: add mlflow_run_id column for LLMOps tracking
+            try:
+                conn.execute("ALTER TABLE runs ADD COLUMN mlflow_run_id TEXT DEFAULT ''")
+            except Exception:
+                pass  # column already exists
             # Mark any runs left in 'running' state as failed (crash recovery)
             conn.execute("UPDATE runs SET status='failed' WHERE status='running'")
             conn.execute("""
@@ -91,6 +96,7 @@ def save_run(
     results: Dict[str, Any],
     status: str = "completed",
     user_email: str = "",
+    mlflow_run_id: str = "",
 ) -> None:
     """Persist a completed run to SQLite."""
     with _lock:
@@ -99,8 +105,9 @@ def save_run(
             conn.execute(
                 """
                 INSERT OR REPLACE INTO runs
-                    (run_id, project_id, user_email, timestamp, health_score, domain, application_type, status, results_json)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    (run_id, project_id, user_email, timestamp, health_score, domain,
+                     application_type, status, results_json, mlflow_run_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     run_id,
@@ -112,6 +119,7 @@ def save_run(
                     application_type,
                     status,
                     json.dumps(results),
+                    mlflow_run_id,
                 ),
             )
             conn.commit()

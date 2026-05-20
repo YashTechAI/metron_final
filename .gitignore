@@ -58,6 +58,11 @@ ENV/
 # Auth — real user list with plaintext passwords (never commit)
 users.json
 
+# SQLite runtime database (generated at runtime, never commit)
+*.db
+*.db-shm
+*.db-wal
+
 # IDE / Editor
 .vscode/
 .idea/

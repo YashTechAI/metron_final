@@ -52,3 +52,8 @@ python-jose[cryptography]>=3.3.0
 
 # ── Optional: document parsing ───────────────────────────────────────────────
 # PyPDF2>=3.0.0
+
+# ── LLMOps: MLflow experiment tracking ───────────────────────────────────────
+mlflow>=2.14.0
+boto3>=1.34.0           # S3 artifact storage for MLflow
+psycopg2-binary>=2.9.0  # RDS PostgreSQL backend for MLflow

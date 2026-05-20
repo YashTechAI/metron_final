@@ -3,6 +3,7 @@
 import { useState, useEffect, Suspense } from "react";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { authFetch } from "@/lib/api";
+import TrendChart from "@/components/TrendChart";
 
 const API = "";
 
@@ -367,7 +368,7 @@ ${rcaSection}`;
   const TABS = [
     "Functional", "Security", "Quality",
     ...(results.rag ? ["RAG"] : []),
-    "Performance", "Load Test",
+    "Performance", "Load Test", "Trends",
     ...(results.rca ? ["RCA"] : []),
     "Export",
   ];
@@ -443,15 +444,20 @@ ${rcaSection}`;
           {/* ── Tab 3: RAG (only present in RAG mode) ── */}
           {results.rag && activeTab === 3 && <RAGTab data={results.rag} />}
 
-          {/* ── Performance / Load / RCA / Export — indices shift with optional RAG tab ── */}
+          {/* ── Performance / Load / Trends / RCA / Export — indices shift with optional RAG tab ── */}
           {(() => {
             const base = results.rag ? 4 : 3;
-            const rcaIdx   = results.rca ? base + 2 : -1;
-            const exportIdx = results.rca ? base + 3 : base + 2;
+            // base+0 = Performance, base+1 = Load Test, base+2 = Trends
+            const trendsIdx = base + 2;
+            const rcaIdx    = results.rca ? base + 3 : -1;
+            const exportIdx = results.rca ? base + 4 : base + 3;
             return (
               <>
                 {activeTab === base     && <PerformanceTab data={results.performance} />}
                 {activeTab === base + 1 && <LoadTab data={results.load} />}
+                {activeTab === trendsIdx && (
+                  <TrendChart projectId={projectId} currentRunId={results.run_id} />
+                )}
                 {results.rca && activeTab === rcaIdx && <RCATab data={results.rca} />}
                 {activeTab === exportIdx && (
             <div className="space-y-4">

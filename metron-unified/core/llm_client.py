@@ -87,6 +87,19 @@ class LLMClient:
         # Map model → exhausted_at timestamp (monotonic). Replaced the old set so
         # exhaustion expires after _EXHAUSTION_COOLDOWN_S instead of lasting forever.
         self._exhausted: dict[str, float] = {}
+        # Usage accumulator — totalled across every LLM call this client makes
+        self._tokens_in:  int   = 0
+        self._tokens_out: int   = 0
+        self._cost_usd:   float = 0.0
+
+    def get_usage(self) -> dict:
+        """Return cumulative token and cost totals across all calls made by this client."""
+        return {
+            "tokens_input":       self._tokens_in,
+            "tokens_output":      self._tokens_out,
+            "total_tokens":       self._tokens_in + self._tokens_out,
+            "estimated_cost_usd": round(self._cost_usd, 6),
+        }
 
     # ── Public API ─────────────────────────────────────────────────────────
 
@@ -243,6 +256,17 @@ class LLMClient:
             kwargs["api_key"] = self.api_key if "gemini" in self.provider_name.lower() else os.environ.get("GEMINI_API_KEY", "")
 
         response = await litellm.acompletion(**kwargs)
+
+        # Accumulate token usage and estimated cost as a side effect
+        usage = getattr(response, "usage", None)
+        if usage:
+            self._tokens_in  += getattr(usage, "prompt_tokens",     0)
+            self._tokens_out += getattr(usage, "completion_tokens",  0)
+        try:
+            self._cost_usd += litellm.completion_cost(completion_response=response)
+        except Exception:
+            pass  # provider not in LiteLLM pricing DB — cost stays 0
+
         return response.choices[0].message.content or ""
 
     @staticmethod

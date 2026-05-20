@@ -6,6 +6,7 @@ and handles the full lifecycle from AppProfile → AggregatedReport.
 
 from __future__ import annotations
 import asyncio
+import os
 import uuid
 from datetime import datetime
 from typing import Any, Dict, List, Optional
@@ -655,6 +656,102 @@ async def run_pipeline(
         job_store[run_id]["results"]  = final_json
         _job_locks.pop(run_id, None)   # release lock for completed run
 
+        # ── LLMOps: MLflow Experiment Tracking + Regression Detection + Alerting ──
+        mlflow_run_id = ""
+        try:
+            mlflow_uri = os.environ.get("MLFLOW_TRACKING_URI", "")
+            if mlflow_uri:
+                import hashlib
+                import mlflow
+                from mlflow.tracking import MlflowClient
+
+                mlflow.set_tracking_uri(mlflow_uri)
+                mlflow.set_experiment(f"project-{project_id}")
+
+                arch_doc = getattr(config, "architecture_document", "") or ""
+                prompt_hash = hashlib.sha256(
+                    (config.agent_description + config.agent_domain + arch_doc[:500]).encode()
+                ).hexdigest()[:16]
+
+                func_pass_rate = (sum(1 for r in func_results if r.passed) / len(func_results)) if func_results else 0.0
+                sec_pass_rate  = (sum(1 for r in sec_results  if r.passed) / len(sec_results))  if sec_results  else 0.0
+                qual_pass_rate = (sum(1 for r in qual_results if r.passed) / len(qual_results)) if qual_results else 0.0
+
+                with mlflow.start_run(run_name=run_id,
+                                      tags={"project_id": project_id, "domain": config.agent_domain}):
+                    mlflow.log_param("agent_description_preview", config.agent_description[:250])
+                    mlflow.log_param("agent_domain",  config.agent_domain)
+                    mlflow.log_param("llm_provider",  config.llm_provider)
+                    mlflow.log_param("app_type",      str(config.application_type))
+                    mlflow.log_param("prompt_hash",   prompt_hash)
+                    mlflow.log_param("num_personas",  config.num_personas)
+                    mlflow.log_param("num_scenarios", config.num_scenarios or 0)
+
+                    mlflow.log_metric("health_score",         report.health_score)
+                    mlflow.log_metric("functional_pass_rate", func_pass_rate)
+                    mlflow.log_metric("security_pass_rate",   sec_pass_rate)
+                    mlflow.log_metric("quality_pass_rate",    qual_pass_rate)
+                    mlflow.log_metric("p95_latency_ms",       perf_metrics.get("p95_latency_ms", 0))
+                    mlflow.log_metric("error_rate",           perf_metrics.get("error_rate", 0))
+                    mlflow.log_metric("load_rps",             load_metrics.get("requests_per_second", 0))
+
+                    usage = llm_client.get_usage()
+                    mlflow.log_metric("tokens_input",       usage["tokens_input"])
+                    mlflow.log_metric("tokens_output",      usage["tokens_output"])
+                    mlflow.log_metric("estimated_cost_usd", usage["estimated_cost_usd"])
+
+                    mlflow.log_dict(final_json, "full_report.json")
+                    if report.report_html:
+                        mlflow.log_text(report.report_html, "report.html")
+
+                    mlflow_run_id = mlflow.active_run().info.run_id
+
+                    # Regression detection — compare against the previous run for this project
+                    regression_detected = False
+                    health_delta = 0.0
+                    prompt_changed = False
+                    try:
+                        mlflow_client = MlflowClient()
+                        experiment = mlflow_client.get_experiment_by_name(f"project-{project_id}")
+                        if experiment:
+                            prev_runs = mlflow_client.search_runs(
+                                experiment_ids=[experiment.experiment_id],
+                                filter_string=f"tags.project_id = '{project_id}'",
+                                order_by=["start_time DESC"],
+                                max_results=2,
+                            )
+                            if len(prev_runs) >= 2:
+                                prev_health = prev_runs[1].data.metrics.get("health_score", 1.0)
+                                health_delta = report.health_score - prev_health
+                                regression_threshold = float(
+                                    os.environ.get("ALERT_REGRESSION_THRESHOLD", "0.05")
+                                )
+                                regression_detected = health_delta < -regression_threshold
+                                prev_prompt_hash = prev_runs[1].data.params.get("prompt_hash", "")
+                                prompt_changed = prompt_hash != prev_prompt_hash
+                    except Exception as _reg_err:
+                        print(f"[Pipeline] Regression detection failed (non-fatal): {_reg_err}")
+
+                    mlflow.set_tag("regression_detected", str(regression_detected))
+                    mlflow.set_tag("health_delta",        str(round(health_delta, 4)))
+                    mlflow.set_tag("prompt_changed",      str(prompt_changed))
+
+                # Alerting — fires outside the mlflow.start_run context so a failure
+                # here does not affect the MLflow run record.
+                try:
+                    from core.alerts import fire_alerts
+                    fire_alerts(
+                        project_id=project_id,
+                        run_id=run_id,
+                        health_score=report.health_score,
+                        regression_detected=regression_detected,
+                        health_delta=health_delta,
+                    )
+                except Exception as _alert_err:
+                    print(f"[Pipeline] Alerting failed (non-fatal): {_alert_err}")
+        except Exception as mlflow_err:
+            print(f"[Pipeline] MLflow logging failed (non-fatal): {mlflow_err}")
+
         # Persist completed run to SQLite for history / regression endpoints
         try:
             _db.save_run(
@@ -665,6 +762,7 @@ async def run_pipeline(
                 application_type=config.application_type.value,
                 results=final_json,
                 user_email=user_email,
+                mlflow_run_id=mlflow_run_id,
             )
         except Exception as db_err:
             print(f"[Pipeline] DB save failed (non-fatal): {db_err}")
