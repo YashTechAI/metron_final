@@ -890,7 +890,7 @@ function SecurityTab({ data, onManualPass, onManualRevert }: { data: PhaseSummar
             >
               <div className="flex items-center gap-3">
                 <span className={`material-symbols-outlined text-base ${passed === results.length ? "text-secondary" : "text-error"}`}>
-                  {passed === results.length ? "shield" : "shield_with_warning"}
+                  {passed === results.length ? "shield" : "gpp_bad"}
                 </span>
                 <p className="text-sm font-black">{metricLabel(cat)}</p>
               </div>
