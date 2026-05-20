@@ -17,10 +17,9 @@ from typing import Any, Dict
 from core.llm_client import LLMClient
 from core.models import TechnicalProfile
 
-_SYSTEM = """You are a principal AI security architect and red team lead.
-Your job is to extract technical attack-surface intelligence from any AI application document.
-You are NOT summarising the document — you are identifying every technical detail
-that a professional red team would use to craft targeted attacks.
+_SYSTEM = """You are a senior technical systems analyst specialising in AI application architecture.
+Your job is to extract structural and configuration details from AI application documentation.
+Identify every technical component, integration point, data flow, and configuration parameter described.
 Return ONLY valid JSON. No markdown, no explanation."""
 
 _PROMPT = """

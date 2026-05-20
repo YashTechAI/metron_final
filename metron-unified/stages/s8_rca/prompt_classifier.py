@@ -157,13 +157,17 @@ async def _classify_batch(
         # The metric_failed + score + judge_reasoning fields carry enough signal for
         # taxonomy classification without the raw attack content.
         if is_security:
+            # Mask judge_reasoning for security tests — LLM-generated reasoning can
+            # contain attack terminology ("complied with jailbreak", etc.) that triggers
+            # Azure content filters. Pass/fail verdict provides sufficient classifier signal.
+            security_verdict = "defense successful" if r.passed else "boundary violation detected"
             entry = {
                 "index": i,
                 "probe_type": "[security test probe — content withheld]",
                 "ai_output": "[AI response to security probe — content withheld]",
                 "metric_failed": r.metric_name,
                 "score": round(r.score, 3),
-                "judge_reasoning": (r.reason or "")[:200],
+                "judge_reasoning": f"[security evaluation: {security_verdict}]",
             }
         else:
             entry = {

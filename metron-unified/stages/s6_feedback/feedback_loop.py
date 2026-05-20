@@ -99,11 +99,19 @@ async def generate_new_slots(
     if not failures:
         return []
 
-    failures_text = "\n".join(
-        f"[{f['superset']}] Persona: {f['persona_name']} | Score: {f['score']:.2f} | "
-        f"Issue: {f['reason'][:100]} | Prompt: {f['prompt'][:80]}"
-        for f in failures
-    )
+    def _failure_line(f: dict) -> str:
+        if f.get("superset") == "security":
+            # Security test prompts contain attack strings — omit them from the LLM call
+            return (
+                f"[security] Persona: {f['persona_name']} | Score: {f['score']:.2f} | "
+                f"Issue: [security boundary evaluation result]"
+            )
+        return (
+            f"[{f['superset']}] Persona: {f['persona_name']} | Score: {f['score']:.2f} | "
+            f"Issue: {f['reason'][:100]} | Prompt: {f['prompt'][:80]}"
+        )
+
+    failures_text = "\n".join(_failure_line(f) for f in failures)
 
     prompt = FAILURE_ANALYSIS_PROMPT.format(
         domain=profile.domain,
