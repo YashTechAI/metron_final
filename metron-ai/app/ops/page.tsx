@@ -43,8 +43,9 @@ export default function OpsLoginPage() {
       setLoading(false);
       return;
     }
-    document.cookie = "metron_session=1; path=/; SameSite=Lax";
-    document.cookie = "metron_role=super_admin; path=/; SameSite=Lax";
+    document.cookie = "metron_session=1; path=/; SameSite=Lax; max-age=28800";
+    document.cookie = "metron_role=super_admin; path=/; SameSite=Lax; max-age=28800";
+    sessionStorage.setItem("metron_user_email", qd.email || email || "");
     window.location.href = "/super";
   };
 

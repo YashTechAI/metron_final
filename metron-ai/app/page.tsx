@@ -30,8 +30,9 @@ export default function LoginPage() {
       return;
     }
     const qd = await qr.json();
-    document.cookie = "metron_session=1; path=/; SameSite=Lax";
-    document.cookie = `metron_role=${qd.role}; path=/; SameSite=Lax`;
+    document.cookie = "metron_session=1; path=/; SameSite=Lax; max-age=28800";
+    document.cookie = `metron_role=${qd.role}; path=/; SameSite=Lax; max-age=28800`;
+    sessionStorage.setItem("metron_user_email", qd.email || "");
     setLoading(false);
     if (qd.role === "tenant_admin") window.location.href = "/admin";
     else window.location.href = "/dashboard";

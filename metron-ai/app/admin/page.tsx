@@ -17,6 +17,7 @@ interface TenantStats {
   quota_used: number;
   users: TenantUser[];
   total_runs_all_time: number;
+  admin_email: string;
 }
 
 const ROLES = ["viewer", "functional_tester", "security_tester", "all"];
@@ -108,6 +109,7 @@ export default function AdminPage() {
 
   if (!stats) return null;
 
+  const teamMembers = (stats.users ?? []).filter(u => u.user_email !== stats.admin_email && u.role !== "tenant_admin");
   const quotaPct = stats.quota_limit > 0 ? Math.round((stats.quota_used / stats.quota_limit) * 100) : 0;
 
   return (
@@ -123,7 +125,7 @@ export default function AdminPage() {
       {/* Stats */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         {[
-          { label: "Team Size", value: stats.users.length, icon: "group" },
+          { label: "Team Size", value: teamMembers.length, icon: "group" },
           { label: "Quota Used", value: `${stats.quota_used}/${stats.quota_limit > 0 ? stats.quota_limit : "∞"}`, icon: "data_usage" },
           { label: "All-time Runs", value: stats.total_runs_all_time, icon: "history" },
           { label: "Quota %", value: `${quotaPct}%`, icon: "percent" },
@@ -201,12 +203,12 @@ export default function AdminPage() {
         )}
 
         <div className="divide-y divide-[var(--color-outline-variant)]/10">
-          {stats.users.filter(u => u.role !== "tenant_admin").length === 0 ? (
+          {teamMembers.length === 0 ? (
             <div className="p-12 text-center space-y-2">
               <span className="material-symbols-outlined text-3xl text-[var(--color-outline)] opacity-40">group_add</span>
               <p className="text-sm text-[var(--color-on-surface-variant)] opacity-60">No team members yet. Invite your first member above.</p>
             </div>
-          ) : stats.users.filter(u => u.role !== "tenant_admin").map(u => {
+          ) : teamMembers.map(u => {
             const userPct = u.run_limit > 0 ? Math.round((u.runs_used / u.run_limit) * 100) : 0;
             return (
               <div key={u.user_email} className="p-4 flex items-center gap-4 flex-wrap">

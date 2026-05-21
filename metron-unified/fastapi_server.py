@@ -48,6 +48,39 @@ app.add_middleware(
 jobs: Dict[str, Dict[str, Any]] = {}
 
 
+_PIPELINE_TIMEOUT_MINUTES = 90
+
+
+async def _reap_stuck_jobs():
+    """Background task: mark jobs stuck in running/queued for >90 min as failed."""
+    from datetime import datetime as _dt, timedelta
+    while True:
+        await asyncio.sleep(300)  # check every 5 minutes
+        try:
+            cutoff = _dt.utcnow() - timedelta(minutes=_PIPELINE_TIMEOUT_MINUTES)
+            for run_id, job in list(jobs.items()):
+                if job.get("status") not in ("running", "queued"):
+                    continue
+                ts_str = job.get("timestamp", "")
+                if not ts_str:
+                    continue
+                try:
+                    if _dt.fromisoformat(ts_str) < cutoff:
+                        msg = f"Run automatically stopped after {_PIPELINE_TIMEOUT_MINUTES} minutes."
+                        job["status"]  = "failed"
+                        job["error"]   = msg
+                        job["message"] = f"Timed out ({_PIPELINE_TIMEOUT_MINUTES} min limit)"
+                        print(f"[Reaper] Timed out run {run_id}")
+                        try:
+                            _db.mark_run_failed(run_id, msg)
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+        except Exception as e:
+            print(f"[Reaper] Error: {e}")
+
+
 @app.on_event("startup")
 async def _startup():
     """Init DB and re-populate in-memory jobs from recent completed/failed runs."""
@@ -70,6 +103,7 @@ async def _startup():
                 "eval_warnings": [],
             }
         print(f"[DB] Recovered {len(jobs)} recent runs from SQLite on startup.")
+        asyncio.create_task(_reap_stuck_jobs())
     except Exception as e:
         print(f"[DB] Startup recovery failed (non-fatal): {e}")
 
@@ -443,7 +477,7 @@ async def run_tests(
             doc_text = ""
 
     # ── Quota gate — check BEFORE creating the job ────────────────────────
-    quota_ok, quota_reason = _db.check_quota(user["email"])
+    quota_ok, quota_reason = _db.try_consume_quota(user["email"])
     if not quota_ok:
         raise HTTPException(status_code=429, detail=quota_reason)
 
@@ -738,7 +772,16 @@ def _require_super_admin(user: dict) -> None:
 async def admin_stats(request: Request):
     user = get_current_user(request)
     _require_tenant_admin(user)
-    return _db.get_tenant_stats(user["tenant_id"])
+    result = _db.get_tenant_stats(user["tenant_id"])
+    result["admin_email"] = user["email"]
+    return result
+
+
+@app.get("/api/admin/runs")
+async def admin_list_runs(request: Request):
+    user = get_current_user(request)
+    _require_tenant_admin(user)
+    return {"runs": _db.get_tenant_runs(user["tenant_id"])}
 
 
 @app.get("/api/admin/users")

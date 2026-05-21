@@ -14,11 +14,18 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
     fetchAuthSession().then(async session => {
       if (!session.tokens?.idToken) { window.location.href = "/"; return; }
       const token = session.tokens.idToken.toString();
+      const sessionEmail = session.tokens.idToken.payload?.email as string || "";
+      // If another tab logged in as a different user, Amplify's localStorage is theirs — go back to login
+      const cachedEmail = sessionStorage.getItem("metron_user_email");
+      if (cachedEmail && sessionEmail && cachedEmail !== sessionEmail) {
+        window.location.href = "/";
+        return;
+      }
       const r = await fetch("/api/quota", { headers: { Authorization: `Bearer ${token}` } });
       if (!r.ok) { window.location.href = "/"; return; }
       const d = await r.json();
-      if (!["tenant_admin", "super_admin"].includes(d.role)) { window.location.href = "/dashboard"; return; }
-      setEmail(d.email || session.tokens.idToken.payload?.email as string || "");
+      if (!["tenant_admin", "super_admin"].includes(d.role)) { window.location.href = "/"; return; }
+      setEmail(d.email || sessionEmail);
       setTenantName(d.tenant_name || "");
       setReady(true);
     }).catch(() => { window.location.href = "/"; });
@@ -33,6 +40,7 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
 
   const navLinks = [
     { label: "Team", icon: "group", href: "/admin" },
+    { label: "All Runs", icon: "history", href: "/admin/runs" },
   ];
 
   if (!ready) {

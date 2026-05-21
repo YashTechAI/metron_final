@@ -13,11 +13,17 @@ export default function SuperLayout({ children }: { children: React.ReactNode })
     fetchAuthSession().then(async session => {
       if (!session.tokens?.idToken) { window.location.href = "/ops"; return; }
       const token = session.tokens.idToken.toString();
+      const sessionEmail = session.tokens.idToken.payload?.email as string || "";
+      const cachedEmail = sessionStorage.getItem("metron_user_email");
+      if (cachedEmail && sessionEmail && cachedEmail !== sessionEmail) {
+        window.location.href = "/ops";
+        return;
+      }
       const r = await fetch("/api/quota", { headers: { Authorization: `Bearer ${token}` } });
       if (!r.ok) { window.location.href = "/ops"; return; }
       const d = await r.json();
       if (d.role !== "super_admin") { window.location.href = "/ops"; return; }
-      setEmail(d.email || session.tokens.idToken.payload?.email as string || "");
+      setEmail(d.email || sessionEmail);
       setReady(true);
     }).catch(() => { window.location.href = "/ops"; });
   }, []);

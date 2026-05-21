@@ -687,12 +687,6 @@ async def run_pipeline(
         except Exception as db_err:
             print(f"[Pipeline] DB save failed (non-fatal): {db_err}")
 
-        # Increment quota counters for user and their tenant
-        try:
-            if user_email:
-                _db.increment_quota(user_email)
-        except Exception as quota_err:
-            print(f"[Pipeline] Quota increment failed (non-fatal): {quota_err}")
 
     except Exception as e:
         import traceback

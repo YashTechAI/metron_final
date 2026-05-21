@@ -78,6 +78,23 @@ def init_db() -> None:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_runs_tenant ON runs(tenant_id)")
             # Mark any runs left in 'running' state as failed (crash recovery)
             conn.execute("UPDATE runs SET status='failed' WHERE status='running'")
+            # Restore tenant_admin role: for each tenant with NO tenant_admin user,
+            # promote the earliest-created user in that tenant to tenant_admin.
+            tenants_without_admin = conn.execute(
+                "SELECT tenant_id FROM tenants WHERE tenant_id NOT IN "
+                "(SELECT DISTINCT tenant_id FROM users WHERE role = 'tenant_admin' AND tenant_id IS NOT NULL)"
+            ).fetchall()
+            for t in tenants_without_admin:
+                earliest = conn.execute(
+                    "SELECT user_email FROM users WHERE tenant_id = ? ORDER BY created_at ASC LIMIT 1",
+                    (t["tenant_id"],),
+                ).fetchone()
+                if earliest:
+                    conn.execute(
+                        "UPDATE users SET role = 'tenant_admin' WHERE user_email = ?",
+                        (earliest["user_email"],),
+                    )
+                    print(f"[DB] Restored tenant_admin role to {earliest['user_email']} for tenant {t['tenant_id']}")
 
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS projects (
@@ -477,19 +494,18 @@ def get_user(user_email: str) -> Optional[Dict[str, Any]]:
 
 # ── Multi-tenant: quota enforcement ───────────────────────────────────────────
 
-def check_quota(user_email: str) -> Tuple[bool, str]:
+def try_consume_quota(user_email: str) -> Tuple[bool, str]:
     """
-    Return (allowed, reason).
-    Checks both the per-user run_limit and the tenant-wide quota_limit.
+    Atomically check quota AND increment counters in one transaction.
+    Returns (allowed, reason). If allowed, counters are already incremented.
     Super admins are always allowed. Limits of 0 mean unlimited.
-    Also resets counters if a new monthly period has started.
     """
     with _lock:
         conn = _connect()
         try:
             row = conn.execute("SELECT * FROM users WHERE user_email = ?", (user_email,)).fetchone()
             if not row:
-                return True, ""  # unknown user — let get_or_create_user handle it
+                return True, ""
 
             user = dict(row)
 
@@ -509,8 +525,8 @@ def check_quota(user_email: str) -> Tuple[bool, str]:
             runs_used = user.get("runs_used", 0)
             if run_limit > 0 and runs_used >= run_limit:
                 return False, (
-                    f"You have used all {run_limit} of your allocated runs this period. "
-                    "Contact your administrator to increase your limit."
+                    f"You have used all {runs_used}/{run_limit} of your allocated runs this month. "
+                    "Ask your team admin to increase your limit."
                 )
 
             tenant_id = user.get("tenant_id")
@@ -527,34 +543,54 @@ def check_quota(user_email: str) -> Tuple[bool, str]:
                         )
                         conn.commit()
                         tenant["quota_used"] = 0
+
                     quota_limit = tenant.get("quota_limit", 50)
                     quota_used  = tenant.get("quota_used", 0)
                     if quota_limit > 0 and quota_used >= quota_limit:
                         return False, (
-                            "Your organization has reached its run limit for this period. "
-                            "Contact your administrator."
+                            f"Your organization has used all {quota_used}/{quota_limit} runs for this month. "
+                            "Contact your team admin to increase the org limit."
                         )
 
-            return True, ""
-        finally:
-            conn.close()
+                    # Atomically increment tenant quota
+                    updated = conn.execute(
+                        "UPDATE tenants SET quota_used = quota_used + 1 "
+                        "WHERE tenant_id = ? AND (quota_limit = 0 OR quota_used < quota_limit)",
+                        (tenant_id,),
+                    ).rowcount
+                    if updated == 0:
+                        conn.rollback()
+                        # Re-read actual count for accurate message
+                        t2 = conn.execute("SELECT quota_used, quota_limit FROM tenants WHERE tenant_id = ?", (tenant_id,)).fetchone()
+                        used2 = t2["quota_used"] if t2 else quota_used
+                        lim2  = t2["quota_limit"] if t2 else quota_limit
+                        return False, (
+                            f"Your organization has used all {used2}/{lim2} runs for this month. "
+                            "Contact your team admin to increase the org limit."
+                        )
 
-
-def increment_quota(user_email: str) -> None:
-    """Increment runs_used for the user and their tenant. Call after a run completes."""
-    with _lock:
-        conn = _connect()
-        try:
-            conn.execute(
-                "UPDATE users SET runs_used = runs_used + 1 WHERE user_email = ?", (user_email,)
-            )
-            row = conn.execute("SELECT tenant_id FROM users WHERE user_email = ?", (user_email,)).fetchone()
-            if row and row["tenant_id"]:
+            # Atomically increment user quota
+            if run_limit > 0:
+                updated = conn.execute(
+                    "UPDATE users SET runs_used = runs_used + 1 "
+                    "WHERE user_email = ? AND (run_limit = 0 OR runs_used < run_limit)",
+                    (user_email,),
+                ).rowcount
+                if updated == 0:
+                    # Rollback tenant increment if it happened
+                    conn.rollback()
+                    return False, (
+                        f"You have used all {runs_used}/{run_limit} of your allocated runs this month. "
+                        "Ask your team admin to increase your limit."
+                    )
+            else:
                 conn.execute(
-                    "UPDATE tenants SET quota_used = quota_used + 1 WHERE tenant_id = ?",
-                    (row["tenant_id"],),
+                    "UPDATE users SET runs_used = runs_used + 1 WHERE user_email = ?",
+                    (user_email,),
                 )
+
             conn.commit()
+            return True, ""
         finally:
             conn.close()
 
@@ -649,12 +685,15 @@ def update_user_limit(user_email: str, run_limit: int, requesting_tenant_id: str
 
 
 def update_user_role(user_email: str, role: str, requesting_tenant_id: str) -> bool:
-    """Tenant admin updates a user's role. Returns False if user not in tenant."""
+    """Tenant admin updates a user's role. Returns False if user not in tenant or is the tenant admin."""
     with _lock:
         conn = _connect()
         try:
-            row = conn.execute("SELECT tenant_id FROM users WHERE user_email = ?", (user_email,)).fetchone()
+            row = conn.execute("SELECT tenant_id, role FROM users WHERE user_email = ?", (user_email,)).fetchone()
             if not row or row["tenant_id"] != requesting_tenant_id:
+                return False
+            # Protect the tenant admin — their role must never be changed via this path
+            if row["role"] == "tenant_admin":
                 return False
             conn.execute("UPDATE users SET role = ? WHERE user_email = ?", (role, user_email))
             conn.commit()
@@ -674,6 +713,28 @@ def remove_user(user_email: str, requesting_tenant_id: str) -> bool:
             conn.execute("DELETE FROM users WHERE user_email = ?", (user_email,))
             conn.commit()
             return True
+        finally:
+            conn.close()
+
+
+def get_tenant_runs(tenant_id: str) -> List[Dict[str, Any]]:
+    """Return all runs for a tenant with user attribution, newest first."""
+    with _lock:
+        conn = _connect()
+        try:
+            rows = conn.execute(
+                """
+                SELECT r.run_id, r.user_email, r.project_id, r.timestamp,
+                       r.health_score, r.domain, r.application_type, r.status
+                FROM runs r
+                JOIN users u ON r.user_email = u.user_email
+                WHERE u.tenant_id = ?
+                ORDER BY r.timestamp DESC
+                LIMIT 200
+                """,
+                (tenant_id,),
+            ).fetchall()
+            return [dict(r) for r in rows]
         finally:
             conn.close()
 

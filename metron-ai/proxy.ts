@@ -12,24 +12,24 @@ export default function proxy(req: NextRequest) {
   if (pathname.startsWith("/register"))
     return NextResponse.redirect(new URL("/", req.nextUrl));
 
-  // /super requires super_admin role
+  // /super — any active session is allowed through; the layout verifies super_admin via API
   if (pathname.startsWith("/super")) {
-    if (!session || role !== "super_admin")
-      return NextResponse.redirect(new URL("/ops", req.nextUrl));
+    if (!session) return NextResponse.redirect(new URL("/ops", req.nextUrl));
     return NextResponse.next();
   }
 
-  // /admin requires tenant_admin or super_admin
+  // /admin — any active session is allowed through; the layout verifies role via API
+  // (cookie role is not trusted here because another browser tab's login can overwrite it)
   if (pathname.startsWith("/admin")) {
     if (!session) return NextResponse.redirect(new URL("/", req.nextUrl));
-    if (!["tenant_admin", "super_admin"].includes(role ?? ""))
-      return NextResponse.redirect(new URL("/dashboard", req.nextUrl));
     return NextResponse.next();
   }
 
-  // /dashboard requires any authenticated session
+  // /dashboard requires any authenticated session — admins go to their own panel
   if (pathname.startsWith("/dashboard")) {
     if (!session) return NextResponse.redirect(new URL("/", req.nextUrl));
+    if (role === "tenant_admin") return NextResponse.redirect(new URL("/admin", req.nextUrl));
+    if (role === "super_admin") return NextResponse.redirect(new URL("/super", req.nextUrl));
     return NextResponse.next();
   }
 
