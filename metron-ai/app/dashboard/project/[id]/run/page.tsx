@@ -4,6 +4,52 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { authFetch } from "@/lib/api";
 
+interface QuotaStatus {
+  role: string;
+  run_limit: number;
+  runs_used: number;
+  tenant_quota_limit: number;
+  tenant_quota_used: number;
+  tenant_name: string;
+}
+
+function QuotaBanner({ quota }: { quota: QuotaStatus }) {
+  if (quota.role === "super_admin") return null;
+  const userPct = quota.run_limit > 0 ? Math.round((quota.runs_used / quota.run_limit) * 100) : 0;
+  const tenantPct = quota.tenant_quota_limit > 0
+    ? Math.round((quota.tenant_quota_used / quota.tenant_quota_limit) * 100) : 0;
+  const warn = userPct >= 80 || tenantPct >= 80;
+  const blocked = (quota.run_limit > 0 && quota.runs_used >= quota.run_limit)
+    || (quota.tenant_quota_limit > 0 && quota.tenant_quota_used >= quota.tenant_quota_limit);
+  const color = blocked ? "border-error/30 bg-error/5" : warn ? "border-[#855300]/30 bg-[#855300]/5" : "border-[var(--color-outline-variant)] bg-[var(--color-surface-container-low)]";
+  return (
+    <div className={`card p-4 border ${color} flex items-center gap-4 flex-wrap`}>
+      <span className={`material-symbols-outlined text-xl ${blocked ? "text-error" : warn ? "text-[#855300]" : "text-primary"}`}>
+        {blocked ? "block" : "data_usage"}
+      </span>
+      <div className="flex-1 min-w-0">
+        <p className="text-xs font-black text-[var(--color-on-surface)]">
+          {blocked ? "Run limit reached" : "Quota Usage"}
+        </p>
+        <p className="text-[10px] text-[var(--color-on-surface-variant)] opacity-60">
+          Your runs: {quota.runs_used}/{quota.run_limit > 0 ? quota.run_limit : "∞"} this period
+          {quota.tenant_name && quota.tenant_quota_limit > 0
+            ? ` · ${quota.tenant_name}: ${quota.tenant_quota_used}/${quota.tenant_quota_limit} total`
+            : ""}
+        </p>
+      </div>
+      <div className="flex gap-2 items-center">
+        {quota.run_limit > 0 && (
+          <div className="w-24 h-1.5 rounded-full bg-[var(--color-outline-variant)]/30 overflow-hidden">
+            <div className={`h-full rounded-full transition-all ${blocked ? "bg-error" : warn ? "bg-[#855300]" : "bg-primary"}`}
+              style={{ width: `${Math.min(userPct, 100)}%` }} />
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 const API = "";
 const POLL_INTERVAL = 2500;
 
@@ -380,8 +426,13 @@ export default function RunPage() {
 
   const [runId, setRunId] = useState<string | null>(null);
   const [jobStatus, setJobStatus] = useState<JobStatus | null>(null);
+  const [quota, setQuota] = useState<QuotaStatus | null>(null);
   const feedBottomRef = useRef<HTMLDivElement>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  useEffect(() => {
+    authFetch("/api/quota").then(r => r.ok ? r.json() : null).then(d => { if (d) setQuota(d); }).catch(() => {});
+  }, []);
 
   useEffect(() => {
     const id = sessionStorage.getItem(`run_id_${projectId}`);
@@ -432,6 +483,9 @@ export default function RunPage() {
            "Watch the pipeline work in real time below."}
         </p>
       </div>
+
+      {/* Quota banner */}
+      {quota && <QuotaBanner quota={quota} />}
 
       {/* Sticky progress bar */}
       <div className="card p-5 space-y-3">
