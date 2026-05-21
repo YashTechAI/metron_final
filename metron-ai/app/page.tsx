@@ -219,7 +219,7 @@ export default function LoginPage() {
                   Create one
                 </a>
               </p>
-              <a href="#" className="text-xs font-bold text-[var(--color-primary)] hover:text-[var(--color-primary-container)] transition-colors">Forgot password?</a>
+              <a href="/forgot-password" className="text-xs font-bold text-[var(--color-primary)] hover:text-[var(--color-primary-container)] transition-colors">Forgot password?</a>
             </div>
 
             {error && (
