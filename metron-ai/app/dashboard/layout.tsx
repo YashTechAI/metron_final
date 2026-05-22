@@ -174,22 +174,6 @@ export default function DashboardLayout({
 
       {/* ─── Main View Zone ───────────────────────────── */}
       <main className="flex-1 flex flex-col relative overflow-hidden">
-        {/* Top Navbar */}
-        <header className="h-16 flex items-center justify-between px-8 bg-white border-b border-[var(--color-outline-variant)] border-opacity-20 relative z-[40]">
-           <div className="flex items-center gap-2">
-              <span className="text-[9px] font-black text-outline uppercase tracking-[0.2em] opacity-40">Workspace</span>
-              <span className="material-symbols-outlined text-sm text-outline opacity-20">chevron_right</span>
-              <span className="text-[9px] font-black text-on-surface uppercase tracking-[0.2em]">Live Intelligence Node</span>
-           </div>
-           
-           <div className="flex items-center gap-4">
-              <div className="lg:flex hidden h-9 items-center gap-2 px-4 rounded-full bg-[var(--color-surface-container-low)] border border-outline-variant/10">
-                 <span className="w-1.5 h-1.5 rounded-full bg-[#6bff8f] animate-pulse" />
-                 <span className="text-[9px] font-black text-on-surface uppercase tracking-widest opacity-70">Backend Synced</span>
-              </div>
-           </div>
-        </header>
-
         {/* Content Zone */}
         <div className="flex-1 overflow-y-auto p-8 animate-fade-in no-scrollbar bg-[var(--color-background)]">
            {children}
