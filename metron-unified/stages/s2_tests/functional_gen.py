@@ -6,6 +6,7 @@ grounded in the agent's domain (not generic "capital of France" questions).
 Sourced from new metron-backend/app/stage3_prompts/prompt_generator.py.
 """
 
+
 from __future__ import annotations
 import asyncio
 from typing import List

@@ -10,6 +10,7 @@ RunConfig's architecture profile section, plus enriched
 additional_architecture_notes for the RCA keyword mapper.
 """
 
+
 from __future__ import annotations
 import base64
 import re

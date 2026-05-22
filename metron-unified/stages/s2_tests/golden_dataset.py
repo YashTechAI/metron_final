@@ -1,9 +1,9 @@
 """
 Golden dataset loader for security testing.
 
-  - AdvBench  → jackhhao/jailbreak-classification (public, 527 jailbreak prompts)
+- AdvBench  → jackhhao/jailbreak-classification (public, 527 jailbreak prompts)
                 category: prompt_injection
-  - HarmBench → PKU-Alignment/PKU-SafeRLHF (public, 43K harmful prompts)
+ - HarmBench → PKU-Alignment/PKU-SafeRLHF (public, 43K harmful prompts)
                 category: toxic_request
 
 Both repos are public on HuggingFace — no token required, but a token is used
