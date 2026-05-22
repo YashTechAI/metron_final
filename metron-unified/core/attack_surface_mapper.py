@@ -32,6 +32,7 @@ class AttackVector:
     compliance_tags: List[str] = field(default_factory=list)
 
 
+
 def map_attack_surface(profile: TechnicalProfile) -> List[AttackVector]:
     """
     Map a TechnicalProfile to a list of AttackVectors.
