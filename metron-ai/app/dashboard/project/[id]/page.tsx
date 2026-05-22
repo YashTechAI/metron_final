@@ -166,7 +166,7 @@ export default function ProjectLanding() {
                   <div className="flex items-center gap-8">
                     <div className="text-right">
                       <p className="text-[9px] font-black text-[var(--color-outline)] uppercase tracking-widest">
-                        Health Score
+                        {score != null ? "Health Score" : "Score"}
                       </p>
                       <p
                         className={`text-2xl font-black font-headline tracking-tighter ${
@@ -179,7 +179,7 @@ export default function ProjectLanding() {
                             : "text-red-600"
                         }`}
                       >
-                        {score != null ? `${score}%` : "---"}
+                        {score != null ? `${score}%` : "—"}
                       </p>
                     </div>
                     <button

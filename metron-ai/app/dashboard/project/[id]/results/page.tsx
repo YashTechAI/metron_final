@@ -143,6 +143,7 @@ interface FullResults {
   run_id: string;
   health_score: number;
   passed: boolean;
+  user_role?: string;
   domain: string;
   agent_name: string;
   config_summary: Record<string, unknown>;
@@ -499,28 +500,41 @@ ${r.rca.top_causes.map(c => {
 }).join("\n\n")}
 ` : "";
 
+    const isFullRunMd = ["all", "tenant_admin", "super_admin"].includes(r.user_role ?? "all");
+    const scoreLineMd = isFullRunMd
+      ? `Health Score: ${(r.health_score * 100).toFixed(1)}% | ${r.passed ? "PASSED" : "FAILED"}`
+      : `Tests Passed: ${r.total_passed}/${r.total_tests} | ${(r.user_role ?? "").replace(/_/g, " ")} run`;
+
+    const summaryRows = [
+      (r.functional?.total ?? 0) > 0 ? `| Functional | ${r.functional!.passed} | ${r.functional!.total} | ${r.functional!.pass_rate}% |` : null,
+      (r.security?.total ?? 0) > 0   ? `| Security   | ${r.security!.passed}   | ${r.security!.total}   | ${r.security!.pass_rate}% |`   : null,
+      (r.quality?.total ?? 0) > 0    ? `| Quality    | ${r.quality!.passed}    | ${r.quality!.total}    | ${r.quality!.pass_rate}% |`    : null,
+    ].filter(Boolean).join("\n");
+
+    const perfSection = (r.performance?.avg_latency ?? 0) > 0 ? `
+## Performance
+- Avg Latency: ${(r.performance!.avg_latency ?? 0).toFixed(0)}ms
+- P95: ${(r.performance!.p95_latency ?? 0).toFixed(0)}ms
+- Throughput: ${(r.performance!.throughput ?? 0).toFixed(2)} req/s
+- Error Rate: ${(r.performance!.error_rate ?? 0).toFixed(1)}%` : "";
+
+    const loadSection = (r.load?.requests_per_second ?? 0) > 0 ? `
+## Load Test
+- Concurrent Users: ${r.load!.concurrent_users ?? 0}
+- Throughput: ${(r.load!.requests_per_second ?? 0).toFixed(2)} req/s
+- Error Rate: ${(r.load!.error_rate ?? 0).toFixed(1)}%` : "";
+
     const md = `# METRON QA Report
 Generated: ${new Date().toLocaleString()}
 Agent: ${r.agent_name || "—"} | Domain: ${r.domain}
-Health Score: ${(r.health_score * 100).toFixed(1)}% | ${r.passed ? "PASSED" : "FAILED"}
+${scoreLineMd}
 
 ## Summary
 | Phase | Passed | Total | Pass Rate |
 |-------|--------|-------|-----------|
-| Functional | ${r.functional?.passed ?? 0} | ${r.functional?.total ?? 0} | ${r.functional?.pass_rate ?? 0}% |
-| Security | ${r.security?.passed ?? 0} | ${r.security?.total ?? 0} | ${r.security?.pass_rate ?? 0}% |
-| Quality | ${r.quality?.passed ?? 0} | ${r.quality?.total ?? 0} | ${r.quality?.pass_rate ?? 0}% |
-
-## Performance
-- Avg Latency: ${(r.performance?.avg_latency ?? 0).toFixed(0)}ms
-- P95: ${(r.performance?.p95_latency ?? 0).toFixed(0)}ms
-- Throughput: ${(r.performance?.throughput ?? 0).toFixed(2)} req/s
-- Error Rate: ${(r.performance?.error_rate ?? 0).toFixed(1)}%
-
-## Load Test
-- Concurrent Users: ${r.load?.concurrent_users ?? 0}
-- Throughput: ${(r.load?.requests_per_second ?? 0).toFixed(2)} req/s
-- Error Rate: ${(r.load?.error_rate ?? 0).toFixed(1)}%
+${summaryRows}
+${perfSection}
+${loadSection}
 ${rcaSection}`;
     const blob = new Blob([md], { type: "text/markdown" });
     const a = document.createElement("a");
@@ -552,11 +566,30 @@ ${rcaSection}`;
 
   const healthPct = Math.round(results.health_score * 100);
   const healthColor = healthPct >= 70 ? "text-secondary" : healthPct >= 40 ? "text-[#855300]" : "text-error";
+  const isFullRun = ["all", "tenant_admin", "super_admin"].includes(results.user_role ?? "all");
+
+  const ROLE_PHASES: Record<string, Set<string>> = {
+    "functional_tester":   new Set(["functional"]),
+    "security_tester":     new Set(["security"]),
+    "quality":             new Set(["quality"]),
+    "performance":         new Set(["performance"]),
+    "load":                new Set(["load"]),
+    "security+functional": new Set(["security", "functional"]),
+    "functional+quality":  new Set(["functional", "quality"]),
+    "performance+load":    new Set(["performance", "load"]),
+    "all":                 new Set(["functional", "security", "quality", "performance", "load"]),
+    "tenant_admin":        new Set(["functional", "security", "quality", "performance", "load"]),
+    "super_admin":         new Set(["functional", "security", "quality", "performance", "load"]),
+  };
+  const activePhases = ROLE_PHASES[results.user_role ?? "all"] ?? new Set(["functional", "security", "quality", "performance", "load"]);
 
   const TABS = [
-    "Functional", "Security", "Quality",
-    ...(results.rag ? ["RAG"] : []),
-    "Performance", "Load Test",
+    ...(activePhases.has("functional") ? ["Functional"] : []),
+    ...(activePhases.has("security") ? ["Security"] : []),
+    ...(activePhases.has("quality") ? ["Quality"] : []),
+    ...(results.rag && activePhases.has("functional") ? ["RAG"] : []),
+    ...(activePhases.has("performance") ? ["Performance"] : []),
+    ...(activePhases.has("load") ? ["Load Test"] : []),
     ...(results.rca ? ["RCA"] : []),
     "Export",
   ];
@@ -576,25 +609,37 @@ ${rcaSection}`;
           <p className="text-[var(--color-on-surface-variant)] text-sm opacity-60">{results.domain}</p>
         </div>
 
-        {/* Health Score */}
+        {/* Score card — health score for full runs, passed/total for partial */}
         <div className="card p-6 flex flex-col items-center gap-2 min-w-[140px]">
-          <p className="text-xs font-bold uppercase tracking-widest text-[var(--color-on-surface-variant)] opacity-60">Health Score</p>
-          <p className={`font-headline text-5xl font-black ${healthColor}`}>{healthPct}%</p>
-          <span className={`text-xs font-bold px-3 py-1 rounded-full ${results.passed ? "badge-pass" : "badge-fail"}`}>
-            {results.passed ? "PASSED" : "FAILED"}
-          </span>
+          {isFullRun ? (
+            <>
+              <p className="text-xs font-bold uppercase tracking-widest text-[var(--color-on-surface-variant)] opacity-60">Health Score</p>
+              <p className={`font-headline text-5xl font-black ${healthColor}`}>{healthPct}%</p>
+              <span className={`text-xs font-bold px-3 py-1 rounded-full ${results.passed ? "badge-pass" : "badge-fail"}`}>
+                {results.passed ? "PASSED" : "FAILED"}
+              </span>
+            </>
+          ) : (
+            <>
+              <p className="text-xs font-bold uppercase tracking-widest text-[var(--color-on-surface-variant)] opacity-60">Tests Passed</p>
+              <p className="font-headline text-5xl font-black text-primary">{results.total_passed}/{results.total_tests}</p>
+              <span className="text-xs font-bold text-[var(--color-on-surface-variant)] opacity-60 capitalize">
+                {(results.user_role ?? "").replace(/_/g, " ")}
+              </span>
+            </>
+          )}
         </div>
       </div>
 
-      {/* Summary Cards */}
+      {/* Summary Cards — only show phases that were run */}
       <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
         {[
-          { label: "Functional", icon: "science", color: "text-primary", value: results.functional ? `${results.functional.passed}/${results.functional.total}` : "—", sub: results.functional ? `${results.functional.pass_rate}%` : "" },
-          { label: "Security", icon: "security", color: "text-error", value: results.security ? `${results.security.passed}/${results.security.total}` : "—", sub: results.security ? `${results.security.pass_rate}%` : "" },
-          { label: "Quality", icon: "grade", color: "text-secondary", value: results.quality ? `${results.quality.passed}/${results.quality.total}` : "—", sub: results.quality ? `${results.quality.pass_rate}%` : "" },
-          { label: "Performance", icon: "speed", color: "text-[#855300]", value: results.performance ? `${(results.performance.avg_latency ?? 0).toFixed(0)}ms` : "—", sub: "avg latency" },
-          { label: "Load", icon: "group", color: "text-[var(--color-on-surface-variant)]", value: results.load ? `${(results.load.error_rate ?? 0).toFixed(1)}%` : "—", sub: "error rate" },
-        ].map((item) => (
+          { label: "Functional", phase: "functional", icon: "science", color: "text-primary", value: results.functional ? `${results.functional.passed}/${results.functional.total}` : "—", sub: results.functional ? `${results.functional.pass_rate}%` : "" },
+          { label: "Security", phase: "security", icon: "security", color: "text-error", value: results.security ? `${results.security.passed}/${results.security.total}` : "—", sub: results.security ? `${results.security.pass_rate}%` : "" },
+          { label: "Quality", phase: "quality", icon: "grade", color: "text-secondary", value: results.quality ? `${results.quality.passed}/${results.quality.total}` : "—", sub: results.quality ? `${results.quality.pass_rate}%` : "" },
+          { label: "Performance", phase: "performance", icon: "speed", color: "text-[#855300]", value: results.performance ? `${(results.performance.avg_latency ?? 0).toFixed(0)}ms` : "—", sub: "avg latency" },
+          { label: "Load", phase: "load", icon: "group", color: "text-[var(--color-on-surface-variant)]", value: results.load ? `${(results.load.error_rate ?? 0).toFixed(1)}%` : "—", sub: "error rate" },
+        ].filter(item => activePhases.has(item.phase)).map((item) => (
           <div key={item.label} className="card p-4 text-center">
             <span className={`material-symbols-outlined text-xl ${item.color}`}>{item.icon}</span>
             <p className="font-headline text-2xl font-black text-[var(--color-on-surface)] mt-1">{item.value}</p>
@@ -620,29 +665,14 @@ ${rcaSection}`;
 
         {/* Tab content */}
         <div className="p-6">
-          {/* ── Tab 0: Functional ── */}
-          {activeTab === 0 && <FunctionalTab data={results.functional} personaBreakdown={results.persona_breakdown} onManualPass={(id) => handleManualPass("functional", id)} onManualRevert={(id) => handleManualRevert("functional", id)} />}
-
-          {/* ── Tab 1: Security ── */}
-          {activeTab === 1 && <SecurityTab data={results.security} onManualPass={(id) => handleManualPass("security", id)} onManualRevert={(id) => handleManualRevert("security", id)} />}
-
-          {/* ── Tab 2: Quality ── */}
-          {activeTab === 2 && <QualityTab data={results.quality} onManualPass={(id) => handleManualPass("quality", id)} onManualRevert={(id) => handleManualRevert("quality", id)} />}
-
-          {/* ── Tab 3: RAG (only present in RAG mode) ── */}
-          {results.rag && activeTab === 3 && <RAGTab data={results.rag} onManualPass={(id) => handleManualPass("rag", id)} onManualRevert={(id) => handleManualRevert("rag", id)} />}
-
-          {/* ── Performance / Load / RCA / Export — indices shift with optional RAG tab ── */}
-          {(() => {
-            const base = results.rag ? 4 : 3;
-            const rcaIdx   = results.rca ? base + 2 : -1;
-            const exportIdx = results.rca ? base + 3 : base + 2;
-            return (
-              <>
-                {activeTab === base     && <PerformanceTab data={results.performance} />}
-                {activeTab === base + 1 && <LoadTab data={results.load} />}
-                {results.rca && activeTab === rcaIdx && <RCATab data={results.rca} />}
-                {activeTab === exportIdx && (
+          {TABS[activeTab] === "Functional" && <FunctionalTab data={results.functional} personaBreakdown={results.persona_breakdown} onManualPass={(id) => handleManualPass("functional", id)} onManualRevert={(id) => handleManualRevert("functional", id)} />}
+          {TABS[activeTab] === "Security" && <SecurityTab data={results.security} onManualPass={(id) => handleManualPass("security", id)} onManualRevert={(id) => handleManualRevert("security", id)} />}
+          {TABS[activeTab] === "Quality" && <QualityTab data={results.quality} onManualPass={(id) => handleManualPass("quality", id)} onManualRevert={(id) => handleManualRevert("quality", id)} />}
+          {TABS[activeTab] === "RAG" && <RAGTab data={results.rag} onManualPass={(id) => handleManualPass("rag", id)} onManualRevert={(id) => handleManualRevert("rag", id)} />}
+          {TABS[activeTab] === "Performance" && <PerformanceTab data={results.performance} />}
+          {TABS[activeTab] === "Load Test" && <LoadTab data={results.load} />}
+          {TABS[activeTab] === "RCA" && <RCATab data={results.rca} />}
+          {TABS[activeTab] === "Export" && (
             <div className="space-y-4">
               <p className="text-sm text-[var(--color-on-surface-variant)] opacity-70">Download the test results in various formats.</p>
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
@@ -680,10 +710,7 @@ ${rcaSection}`;
                 />
               </div>
             </div>
-                )}
-              </>
-            );
-          })()}
+          )}
         </div>
       </div>
 

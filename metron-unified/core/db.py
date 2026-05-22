@@ -142,7 +142,7 @@ def init_db() -> None:
 def save_run(
     run_id: str,
     project_id: str,
-    health_score: float,
+    health_score: Optional[float],
     domain: str,
     application_type: str,
     results: Dict[str, Any],

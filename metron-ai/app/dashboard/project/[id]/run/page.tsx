@@ -373,9 +373,13 @@ function FeedbackCard({ content }: { content: Record<string, unknown> }) {
   );
 }
 
+const _FULL_RUN_ROLES = new Set(["all", "tenant_admin", "super_admin"]);
+
 function PipelineCompleteCard({ content }: { content: Record<string, unknown> }) {
   const score = content.health_score as number;
   const passed = content.passed as boolean;
+  const userRole = (content.user_role as string) || "all";
+  const isFullRun = _FULL_RUN_ROLES.has(userRole);
   const scoreColor = score >= 70 ? "text-secondary" : score >= 50 ? "text-[#855300]" : "text-error";
   return (
     <div className="flex gap-3 animate-fade-in">
@@ -391,10 +395,21 @@ function PipelineCompleteCard({ content }: { content: Record<string, unknown> })
             </p>
           </div>
           <div className="ml-auto text-right">
-            <p className={`font-headline text-3xl font-black ${scoreColor}`}>{score}%</p>
-            <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${passed ? "badge-pass" : "badge-fail"}`}>
-              {passed ? "PASSED" : "FAILED"}
-            </span>
+            {isFullRun ? (
+              <>
+                <p className={`font-headline text-3xl font-black ${scoreColor}`}>{score}%</p>
+                <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${passed ? "badge-pass" : "badge-fail"}`}>
+                  {passed ? "PASSED" : "FAILED"}
+                </span>
+              </>
+            ) : (
+              <>
+                <p className="font-headline text-3xl font-black text-primary">
+                  {content.total_passed as number}/{content.total_tests as number}
+                </p>
+                <span className="text-[10px] text-[var(--color-on-surface-variant)] opacity-60">tests passed</span>
+              </>
+            )}
           </div>
         </div>
       </div>

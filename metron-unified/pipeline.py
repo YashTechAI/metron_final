@@ -593,14 +593,16 @@ async def run_pipeline(
         # ── Stage 7: Report Generation ─────────────────────────────────────
         _update(job_store, run_id, 97, "Generating report…", "report")
         _log(job_store, run_id, "phase_start", {"phase": "report", "label": "Generating Report"})
-        report.report_html = generate_html_report(report)
+        report.report_html = generate_html_report(report, user_role=user_role)
         final_json = report_to_json(report)
+        final_json["user_role"] = user_role
         _log(job_store, run_id, "pipeline_complete", {
             "health_score": round(report.health_score * 100, 1),
             "passed": report.passed,
             "total_tests": report.total_tests,
             "total_passed": report.total_passed,
             "domain": report.domain,
+            "user_role": user_role,
         })
         _update(job_store, run_id, 99, "Report ready", "report", {"generated": True})
 
@@ -714,9 +716,14 @@ async def run_pipeline(
         if report.rca:
             final_json["rca"] = report.rca.model_dump()
 
+        _full_run_roles = {"all", "tenant_admin", "super_admin"}
+        _is_full_run = user_role in _full_run_roles
         job_store[run_id]["status"]   = "completed"
         job_store[run_id]["progress"] = 100
-        job_store[run_id]["message"]  = f"Completed! Health score: {report.health_score:.0%}"
+        job_store[run_id]["message"]  = (
+            f"Completed! Health score: {report.health_score:.0%}" if _is_full_run
+            else f"Completed! {report.total_passed}/{report.total_tests} tests passed"
+        )
         job_store[run_id]["results"]  = final_json
         _job_locks.pop(run_id, None)   # release lock for completed run
 
@@ -725,7 +732,7 @@ async def run_pipeline(
             _db.save_run(
                 run_id=run_id,
                 project_id=project_id,
-                health_score=report.health_score,
+                health_score=report.health_score if _is_full_run else None,
                 domain=config.agent_domain,
                 application_type=config.application_type.value,
                 results=final_json,
