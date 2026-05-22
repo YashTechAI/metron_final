@@ -107,7 +107,6 @@ class LLMClient:
         self._mlflow_run_id: str = ""
 
         # Lightweight TPM window for Azure (list of (monotonic_ts, tokens) tuples)
-        # MLflow autolog does not enforce rate limits — this is unavoidable Python
         self._tpm_window: list = []
 
         # Direct token counters — read from response.usage, not from MLflow.
@@ -326,7 +325,7 @@ class LLMClient:
             st["total_tokens"] += p + c
             st["cost_usd"]     += cost
 
-        # MLflow span tagging is best-effort — never blocks the call
+        # Tag this span with the pipeline stage — best-effort, never blocks
         try:
             import mlflow
             active_span = mlflow.get_current_active_span()

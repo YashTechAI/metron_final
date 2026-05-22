@@ -15,7 +15,6 @@ from typing import Any, Dict, List, Optional
 from core import db as _db
 import core.mlflow_run as _mlflow_run
 
-# Configure MLflow token tracking — no-op if env var is absent
 _mlflow_run.configure(
     tracking_uri=os.environ.get("MLFLOW_TRACKING_URI", ""),
     experiment_name=os.environ.get("MLFLOW_EXPERIMENT_NAME", "metron-llmops"),
@@ -132,7 +131,6 @@ async def run_pipeline(
         bedrock_model_id=getattr(config, "bedrock_model_id", "") or "",
     )
 
-    # Start MLflow run — autolog will attach all litellm spans to this run
     _mlflow_run_id = _mlflow_run.start_run(
         metron_run_id=run_id,
         project_id=project_id,
@@ -702,35 +700,58 @@ async def run_pipeline(
         if report.rca:
             final_json["rca"] = report.rca.model_dump()
 
-        # ── Token tracking: write to MLflow, then read back from MLflow ──────
-        # MLflow is the authoritative store. Python accumulators in llm_client
-        # collect during the run; we commit them to MLflow as first-class metrics,
-        # then read the summary back so the LLMOps tab shows MLflow's own data.
+        # ── Token tracking: write to MLflow, read back, persist to metron_runs.db ─
         _calls      = llm_client._token_totals["calls"]
         _prompt     = llm_client._token_totals["prompt"]
         _completion = llm_client._token_totals["completion"]
         _total      = _prompt + _completion
 
         if _total > 0 or _calls > 0:
-            # Write — MLflow stores these as run metrics
-            _mlflow_run.log_token_metrics(
-                mlflow_run_id=_mlflow_run_id,
-                prompt_tokens=_prompt,
-                completion_tokens=_completion,
-                total_tokens=_total,
-                calls=_calls,
-                cost_usd=llm_client._token_totals["cost_usd"],
-                latency_ms=llm_client._token_totals["latency_ms"],
-                by_stage=llm_client._stage_totals,
-                retry_count=llm_client._token_totals["retry_count"],
-                truncated_calls=llm_client._token_totals["truncated_calls"],
-                models_used=llm_client._models_used,
-                pipeline_duration_s=time.monotonic() - llm_client._pipeline_start,
-            )
-            # Read — MLflow is now the source of truth for the LLMOps tab
-            _token_summary = _mlflow_run.read_token_summary(_mlflow_run_id)
+            _latency_ms  = llm_client._token_totals["latency_ms"]
+            _cost_usd    = llm_client._token_totals["cost_usd"]
+            _retry_count = llm_client._token_totals["retry_count"]
+            _truncated   = llm_client._token_totals["truncated_calls"]
+            _duration_s  = time.monotonic() - llm_client._pipeline_start
+
+            if _mlflow_run_id:
+                # MLflow configured — write metrics to MLflow, read back as source of truth
+                _mlflow_run.log_token_metrics(
+                    mlflow_run_id=_mlflow_run_id,
+                    prompt_tokens=_prompt,
+                    completion_tokens=_completion,
+                    total_tokens=_total,
+                    calls=_calls,
+                    cost_usd=_cost_usd,
+                    latency_ms=_latency_ms,
+                    by_stage=llm_client._stage_totals,
+                    retry_count=_retry_count,
+                    truncated_calls=_truncated,
+                    models_used=llm_client._models_used,
+                    pipeline_duration_s=_duration_s,
+                )
+                _token_summary = _mlflow_run.read_token_summary(_mlflow_run_id)
+            else:
+                # MLflow not configured — build summary directly from Python accumulators
+                _token_summary = {
+                    "total_calls":             _calls,
+                    "total_prompt_tokens":     _prompt,
+                    "total_completion_tokens": _completion,
+                    "total_tokens":            _total,
+                    "estimated_cost_usd":      round(_cost_usd, 6),
+                    "avg_latency_ms":          round(_latency_ms / _calls, 1) if _calls else 0.0,
+                    "tpot_ms":                 round(_latency_ms / _completion, 2) if _completion else 0.0,
+                    "token_efficiency_ratio":  round(_completion / _prompt, 4) if _prompt else 0.0,
+                    "tpm_velocity":            round((_total / _duration_s) * 60, 1) if _duration_s else 0.0,
+                    "retry_count":             _retry_count,
+                    "truncated_calls":         _truncated,
+                    "truncation_rate":         round(_truncated / _calls, 4) if _calls else 0.0,
+                    "models_used":             dict(llm_client._models_used),
+                    "by_stage":                dict(llm_client._stage_totals),
+                }
+
             if _token_summary and _token_summary.get("total_tokens", 0) > 0:
                 job_store[run_id]["token_summary"] = _token_summary
+                _db.save_token_summary(run_id, _token_summary)
                 _log(job_store, run_id, "token_summary", {
                     "total_tokens":       _token_summary["total_tokens"],
                     "estimated_cost_usd": _token_summary["estimated_cost_usd"],

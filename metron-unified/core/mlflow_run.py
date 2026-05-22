@@ -3,8 +3,8 @@ MLflow run lifecycle manager for METRON pipeline runs.
 
 All MLflow I/O runs in a ThreadPoolExecutor — never blocks the async event loop.
 Handles concurrent pipeline runs safely via explicit run_id (not thread-local context).
-Token data is captured automatically by mlflow.litellm.autolog() and read back via
-MlflowClient at the end of each run.
+Token metrics are computed in Python and logged to MLflow as first-class metrics;
+they are also persisted to metron_runs.db so the LLMOps tab survives server restarts.
 """
 from __future__ import annotations
 
@@ -32,10 +32,6 @@ def setup_autolog() -> None:
     """
     Enable mlflow.litellm.autolog() globally.
     Must be called once at server startup AFTER configure().
-    After this call, every litellm.acompletion() is auto-instrumented:
-      - input_tokens, output_tokens, total_tokens recorded per call
-      - latency_ms recorded per call
-      - cost estimate recorded per call
     Prompt/response text is NOT logged (privacy).
     """
     if not _TRACKING_URI:
@@ -44,10 +40,6 @@ def setup_autolog() -> None:
         import mlflow
         mlflow.set_tracking_uri(_TRACKING_URI)
         mlflow.set_experiment(_EXPERIMENT_NAME)
-        # No-argument call is safe across all MLflow 3.x versions.
-        # Autolog creates UI traces in the MLflow Traces tab (bonus visibility).
-        # Token counts for METRON's LLMOps tab are read directly from
-        # response.usage in LLMClient._call() — not from autolog metrics.
         mlflow.litellm.autolog()
         print(f"[MLflow] litellm autolog active → {_TRACKING_URI}")
     except Exception as e:
@@ -64,7 +56,6 @@ def start_run(
     """
     Creates a new MLflow run and returns its mlflow_run_id.
     Returns None if MLflow is not configured or on any error.
-    Blocks briefly (up to 10s) — called once at pipeline start.
     """
     if not _TRACKING_URI:
         return None
@@ -108,8 +99,7 @@ def log_token_metrics(
 ) -> None:
     """
     Write final pipeline token totals into the MLflow run as first-class metrics.
-    Blocking — called once at pipeline end, guarantees write completes before
-    read_token_summary() is called so MLflow is the authoritative data source.
+    Blocking — guarantees write completes before read_token_summary() is called.
     """
     if not _TRACKING_URI or not mlflow_run_id:
         return
@@ -127,8 +117,7 @@ def log_token_metrics(
 
 def read_token_summary(mlflow_run_id: Optional[str]) -> Optional[Dict]:
     """
-    Reads aggregated token metrics from the MLflow run.
-    Token data is written by log_token_metrics() at pipeline end.
+    Reads aggregated token metrics back from the MLflow run.
     Blocks up to 10s — called once after log_token_metrics() completes.
     Returns None if not available or MLflow is not configured.
     """
@@ -172,9 +161,8 @@ def _do_start_run(
         "num_personas": str(num_personas),
     })
 
-    # End the context-manager-based run so the thread-local active run is clear.
-    # The run stays in RUNNING state in the DB; we close it explicitly via
-    # set_terminated() in _do_end_run() later.
+    # End context-manager run so thread-local active run is clear.
+    # The run stays RUNNING in the DB; closed explicitly via set_terminated() later.
     mlflow.end_run()
     return mlflow_run_id
 
@@ -220,43 +208,32 @@ def _do_log_token_metrics(
     models_used: dict = None,
     pipeline_duration_s: float = 0.0,
 ) -> None:
-    """
-    Write token totals into the MLflow run as first-class run metrics.
-    Runs in executor thread. MLflow becomes the authoritative token store —
-    read_token_summary() reads these exact keys back.
-    """
     import mlflow
 
     mlflow.set_tracking_uri(_TRACKING_URI)
     client = mlflow.tracking.MlflowClient()
 
-    avg_latency    = round(latency_ms / calls, 1) if calls else 0.0
-    # TPOT — total pipeline latency divided by total output tokens
-    tpot_ms        = round(latency_ms / completion_tokens, 2) if completion_tokens else 0.0
-    # Token Efficiency — how much output per unit of input
-    token_eff      = round(completion_tokens / prompt_tokens, 4) if prompt_tokens else 0.0
-    # TPM Velocity — tokens per minute over the full pipeline run
-    tpm_velocity   = round((total_tokens / pipeline_duration_s) * 60, 1) if pipeline_duration_s else 0.0
-    # Truncation Rate — fraction of calls where max_tokens was hit
+    avg_latency     = round(latency_ms / calls, 1) if calls else 0.0
+    tpot_ms         = round(latency_ms / completion_tokens, 2) if completion_tokens else 0.0
+    token_eff       = round(completion_tokens / prompt_tokens, 4) if prompt_tokens else 0.0
+    tpm_velocity    = round((total_tokens / pipeline_duration_s) * 60, 1) if pipeline_duration_s else 0.0
     truncation_rate = round(truncated_calls / calls, 4) if calls else 0.0
 
-    # Aggregate metrics — readable from run.data.metrics
     metrics: Dict[str, float] = {
-        "prompt_tokens":        float(prompt_tokens),
-        "completion_tokens":    float(completion_tokens),
-        "total_tokens":         float(total_tokens),
-        "total_calls":          float(calls),
-        "cost":                 round(cost_usd, 6),
-        "avg_latency_ms":       avg_latency,
-        "tpot_ms":              tpot_ms,
-        "token_efficiency":     token_eff,
-        "tpm_velocity":         tpm_velocity,
-        "retry_count":          float(retry_count),
-        "truncated_calls":      float(truncated_calls),
-        "truncation_rate":      truncation_rate,
+        "prompt_tokens":     float(prompt_tokens),
+        "completion_tokens": float(completion_tokens),
+        "total_tokens":      float(total_tokens),
+        "total_calls":       float(calls),
+        "cost":              round(cost_usd, 6),
+        "avg_latency_ms":    avg_latency,
+        "tpot_ms":           tpot_ms,
+        "token_efficiency":  token_eff,
+        "tpm_velocity":      tpm_velocity,
+        "retry_count":       float(retry_count),
+        "truncated_calls":   float(truncated_calls),
+        "truncation_rate":   truncation_rate,
     }
 
-    # Per-stage metrics — stage.<name>.tokens / .calls / .cost
     for stage, s in by_stage.items():
         metrics[f"stage.{stage}.tokens"] = float(s.get("total_tokens", 0))
         metrics[f"stage.{stage}.calls"]  = float(s.get("calls", 0))
@@ -268,40 +245,28 @@ def _do_log_token_metrics(
         _ts = int(time.time() * 1000)
         metric_objects = [_Metric(key=k, value=v, timestamp=_ts, step=0) for k, v in metrics.items()]
         client.log_batch(mlflow_run_id, metrics=metric_objects)
-        # Store model names as a tag — avoids encoding issues with /, ., - in metric keys
+        # Store model names as tag — preserves /, ., - in model name strings
         if models_used:
             client.set_tag(mlflow_run_id, "metron.models_used", _json.dumps(models_used))
-        print(f"[MLflow] Token metrics logged → run {mlflow_run_id[:8]} | "
-              f"{total_tokens} tokens, {calls} calls, TPOT={tpot_ms:.1f}ms, eff={token_eff:.3f}")
+        print(f"[MLflow] Metrics logged → run {mlflow_run_id[:8]} | "
+              f"{total_tokens} tokens, {calls} calls, TPOT={tpot_ms:.1f}ms")
     except Exception as e:
-        print(f"[MLflow] log_metrics failed (non-fatal): {e}")
+        print(f"[MLflow] log_batch failed (non-fatal): {e}")
 
 
 def _do_read_summary(mlflow_run_id: str) -> Dict:
-    """
-    Read token data back from the MLflow run metrics written by _do_log_token_metrics.
-    MLflow is the source of truth — the LLMOps tab shows exactly what MLflow stores.
-    """
     import mlflow
 
     mlflow.set_tracking_uri(_TRACKING_URI)
     client = mlflow.tracking.MlflowClient()
-    run    = client.get_run(mlflow_run_id)
-    m      = run.data.metrics   # all metrics logged by _do_log_token_metrics
+    run = client.get_run(mlflow_run_id)
+    m   = run.data.metrics
 
-    total_prompt     = int(m.get("prompt_tokens", 0))
-    total_completion = int(m.get("completion_tokens", 0))
-    total_tokens     = int(m.get("total_tokens", 0))
-    total_calls      = int(m.get("total_calls", 0))
-    estimated_cost   = float(m.get("cost", 0.0))
-    avg_latency      = float(m.get("avg_latency_ms", 0.0))
-
-    # Reconstruct per-stage breakdown from stage.<name>.* metric keys
     by_stage: Dict[str, Dict] = {}
     for key, val in m.items():
         if not key.startswith("stage."):
             continue
-        parts = key.split(".")          # ["stage", "<name>", "<metric>"]
+        parts = key.split(".")
         if len(parts) != 3:
             continue
         _, stage_name, metric = parts
@@ -313,7 +278,6 @@ def _do_read_summary(mlflow_run_id: str) -> Dict:
         elif metric == "cost":
             s["cost_usd"] = float(val)
 
-    # Read model names from tag — stored as JSON to preserve original model name format
     import json as _json
     models_used: Dict[str, int] = {}
     try:
@@ -324,12 +288,12 @@ def _do_read_summary(mlflow_run_id: str) -> Dict:
         pass
 
     return {
-        "total_calls":             total_calls,
-        "total_prompt_tokens":     total_prompt,
-        "total_completion_tokens": total_completion,
-        "total_tokens":            total_tokens,
-        "estimated_cost_usd":      round(estimated_cost, 6),
-        "avg_latency_ms":          avg_latency,
+        "total_calls":             int(m.get("total_calls", 0)),
+        "total_prompt_tokens":     int(m.get("prompt_tokens", 0)),
+        "total_completion_tokens": int(m.get("completion_tokens", 0)),
+        "total_tokens":            int(m.get("total_tokens", 0)),
+        "estimated_cost_usd":      round(float(m.get("cost", 0.0)), 6),
+        "avg_latency_ms":          round(float(m.get("avg_latency_ms", 0.0)), 1),
         "tpot_ms":                 round(float(m.get("tpot_ms", 0.0)), 2),
         "token_efficiency_ratio":  round(float(m.get("token_efficiency", 0.0)), 4),
         "tpm_velocity":            round(float(m.get("tpm_velocity", 0.0)), 1),

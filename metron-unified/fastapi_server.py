@@ -74,6 +74,7 @@ async def _startup():
                 "user_email":    row.get("user_email", ""),
                 "project_id":    row.get("project_id", ""),
                 "eval_warnings": [],
+                "token_summary": row.get("token_summary"),
             }
         print(f"[DB] Recovered {len(jobs)} recent runs from SQLite on startup.")
     except Exception as e:

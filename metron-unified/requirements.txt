@@ -11,7 +11,7 @@ aiohttp>=3.9.0
 # ── LLM routing ─────────────────────────────────────────────────────────────
 litellm>=1.30.0
 
-# ── LLMOps: token tracking via MLflow (skinny = no UI server, ~35 MB) ────────
+# ── LLMOps: token tracking + traces via MLflow ───────────────────────────────
 mlflow-skinny>=2.13.0
 
 # ── LLM Provider SDKs ────────────────────────────────────────────────────────
