@@ -518,6 +518,7 @@ async def run_tests(
         doc_text=doc_text,
         project_id=project_id,
         user_email=user["email"],
+        user_role=user.get("role", "all"),
     )
 
     return {"run_id": run_id, "project_id": project_id}
@@ -802,9 +803,9 @@ async def admin_add_user(body: _AddUserBody, request: Request):
     from core.cognito_admin import invite_user
     user = get_current_user(request)
     _require_tenant_admin(user)
-    valid_roles = {"viewer", "security_tester", "functional_tester", "tenant_admin", "all"}
+    valid_roles = {"functional_tester", "security_tester", "quality", "performance", "load", "security+functional", "functional+quality", "performance+load", "all"}
     if body.role not in valid_roles:
-        raise HTTPException(400, f"Invalid role. Must be one of: {valid_roles}")
+        raise HTTPException(400, f"Invalid role. Must be one of: {sorted(valid_roles)}")
     _db.add_user_to_tenant(body.user_email, user["tenant_id"], body.role, body.run_limit)
     result = invite_user(body.user_email)
     if not result["ok"]:
@@ -825,9 +826,9 @@ async def admin_update_user(email: str, body: _UpdateUserBody, request: Request)
         if not _db.update_user_limit(email, body.run_limit, user["tenant_id"]):
             raise HTTPException(404, "User not found in your tenant")
     if body.role is not None:
-        valid_roles = {"viewer", "security_tester", "functional_tester", "tenant_admin", "all"}
+        valid_roles = {"functional_tester", "security_tester", "quality", "performance", "load", "security+functional", "functional+quality", "performance+load", "all"}
         if body.role not in valid_roles:
-            raise HTTPException(400, f"Invalid role")
+            raise HTTPException(400, f"Invalid role. Must be one of: {sorted(valid_roles)}")
         if not _db.update_user_role(email, body.role, user["tenant_id"]):
             raise HTTPException(404, "User not found in your tenant")
     return {"ok": True}

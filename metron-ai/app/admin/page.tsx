@@ -20,7 +20,7 @@ interface TenantStats {
   admin_email: string;
 }
 
-const ROLES = ["viewer", "functional_tester", "security_tester", "all"];
+const ROLES = ["functional_tester", "security_tester", "quality", "performance", "load", "security+functional", "functional+quality", "performance+load", "all"];
 
 function roleColor(role: string) {
   return role === "tenant_admin"

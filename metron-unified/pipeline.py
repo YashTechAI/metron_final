@@ -59,6 +59,25 @@ from stages.s8_rca.prompt_classifier import classify_prompt_failures
 
 _MAX_LOG_EVENTS = 300   # sliding window — keeps feed responsive with 100+ personas
 
+# Maps user role → set of pipeline phases that role is allowed to execute.
+# Phases not in the set are skipped entirely.
+_ROLE_PHASES: Dict[str, set] = {
+    "functional_tester":   {"functional"},
+    "security_tester":     {"security"},
+    "quality":             {"quality"},
+    "performance":         {"performance"},
+    "load":                {"load"},
+    "security+functional": {"security", "functional"},
+    "functional+quality":  {"functional", "quality"},
+    "performance+load":    {"performance", "load"},
+    "all":                 {"functional", "security", "quality", "performance", "load"},
+    "tenant_admin":        {"functional", "security", "quality", "performance", "load"},
+    "super_admin":         {"functional", "security", "quality", "performance", "load"},
+}
+
+def _allowed_phases(user_role: str) -> set:
+    return _ROLE_PHASES.get(user_role, {"functional", "security", "quality", "performance", "load"})
+
 def _log(job_store: Dict, run_id: str, event_type: str, content: Dict):
     """Append a rich log event to the job's event stream for the live feed UI."""
     if run_id not in job_store:
@@ -92,6 +111,7 @@ async def run_pipeline(
     doc_text:   str = "",
     project_id: str = "",
     user_email: str = "",
+    user_role:  str = "all",
 ) -> None:
     """
     Full 8-stage pipeline. Updates job_store at each stage.
@@ -114,6 +134,8 @@ async def run_pipeline(
     # Acquire the concurrency slot — released in the finally block below
     await _pipeline_sem.acquire()
     job_store[run_id]["status"] = "running"
+    phases = _allowed_phases(user_role)
+    job_store[run_id]["allowed_phases"] = sorted(phases)
     llm_client = LLMClient(
         config.llm_provider, config.llm_api_key,
         azure_endpoint=config.azure_endpoint,
@@ -194,31 +216,36 @@ async def run_pipeline(
         _update(job_store, run_id, 20, "Generating domain-specific test prompts…", "test_gen")
         _log(job_store, run_id, "phase_start", {"phase": "test_gen", "label": "Test Generation"})
 
-        # 2a: Functional prompts — always LLM-generated, grounded in rag_text for RAG mode.
-        # Ground truth Q&A pairs are handled separately in Stream 2 (after Stage 3).
+        # 2a: Functional prompts
         rag_text = config.rag_text if config.is_rag else ""
-        _log(job_store, run_id, "phase_progress", {"phase": "test_gen", "step": "functional", "message": "Generating functional test prompts…"})
-        func_prompts = await generate_all_functional(
-            personas, profile, llm_client,
-            rag_text=rag_text,
-            max_prompts=config.num_scenarios or 0,   # Fix 35: wire UI num_scenarios cap
-        )
+        func_prompts = []
+        if "functional" in phases or "quality" in phases:
+            _log(job_store, run_id, "phase_progress", {"phase": "test_gen", "step": "functional", "message": "Generating functional test prompts…"})
+            func_prompts = await generate_all_functional(
+                personas, profile, llm_client,
+                rag_text=rag_text,
+                max_prompts=config.num_scenarios or 0,
+            )
         _update(job_store, run_id, 21, f"Generated {len(func_prompts)} functional prompts, generating security tests…", "test_gen")
-        _log(job_store, run_id, "phase_progress", {"phase": "test_gen", "step": "security", "message": f"Functional done ({len(func_prompts)} prompts). Generating security/adversarial tests…"})
 
-        # 2b: Security prompts (adversarial personas only) + technical probes
-        sec_prompts = await generate_all_security(
-            personas, profile, llm_client,
-            selected_categories=config.selected_attacks,
-            attacks_per_category=config.attacks_per_category,
-            attack_vectors=attack_vectors,
-            tech_profile=tech_profile,
-        )
+        # 2b: Security prompts
+        sec_prompts = []
+        if "security" in phases:
+            _log(job_store, run_id, "phase_progress", {"phase": "test_gen", "step": "security", "message": "Generating security/adversarial tests…"})
+            sec_prompts = await generate_all_security(
+                personas, profile, llm_client,
+                selected_categories=config.selected_attacks,
+                attacks_per_category=config.attacks_per_category,
+                attack_vectors=attack_vectors,
+                tech_profile=tech_profile,
+            )
         _update(job_store, run_id, 23, f"Generated {len(sec_prompts)} security prompts, generating quality criteria…", "test_gen")
-        _log(job_store, run_id, "phase_progress", {"phase": "test_gen", "step": "quality", "message": f"Security done ({len(sec_prompts)} prompts). Generating quality criteria…"})
 
         # 2c: Quality criteria
-        quality_criteria = await generate_quality_criteria(profile, llm_client)
+        quality_criteria = {}
+        if "quality" in phases:
+            _log(job_store, run_id, "phase_progress", {"phase": "test_gen", "step": "quality", "message": "Generating quality criteria…"})
+            quality_criteria = await generate_quality_criteria(profile, llm_client)
 
         all_prompts = func_prompts + sec_prompts
 
@@ -306,11 +333,21 @@ async def run_pipeline(
                     return []
 
             async def _all_evals():
-                return await asyncio.gather(
-                    _safe(evaluate_functional(conversations, personas, config, llm_client, quality_criteria), "functional"),
-                    _safe(evaluate_security(conversations, personas, config, llm_client),                     "security"),
-                    _safe(evaluate_quality(conversations, personas, config, llm_client, quality_criteria),    "quality"),
-                )
+                coros = []
+                if "functional" in phases:
+                    coros.append(_safe(evaluate_functional(conversations, personas, config, llm_client, quality_criteria), "functional"))
+                if "security" in phases:
+                    coros.append(_safe(evaluate_security(conversations, personas, config, llm_client), "security"))
+                if "quality" in phases:
+                    coros.append(_safe(evaluate_quality(conversations, personas, config, llm_client, quality_criteria), "quality"))
+                results = await asyncio.gather(*coros)
+                # Pad missing phases with empty lists to keep unpack consistent
+                out = [[], [], []]
+                idx = 0
+                if "functional" in phases: out[0] = results[idx]; idx += 1
+                if "security"   in phases: out[1] = results[idx]; idx += 1
+                if "quality"    in phases: out[2] = results[idx]; idx += 1
+                return out
 
             eval_task = asyncio.create_task(_all_evals())
             progress = 58
@@ -424,7 +461,12 @@ async def run_pipeline(
         # Stage 4: Performance evaluation
         _update(job_store, run_id, 75, "Running performance tests…", "performance")
         _log(job_store, run_id, "phase_start", {"phase": "performance", "label": "Performance Tests"})
-        perf_metrics = await evaluate_performance(config, run_id=run_id)
+        perf_metrics = await evaluate_performance(config, run_id=run_id) if "performance" in phases else {
+            "total_requests": 0, "successful": 0, "errors": 0, "error_rate": 0.0,
+            "avg_latency_ms": 0.0, "min_latency_ms": 0.0, "max_latency_ms": 0.0,
+            "median_latency_ms": 0.0, "p95_latency_ms": 0.0, "p99_latency_ms": 0.0,
+            "throughput_rps": 0.0, "assessment": "skipped (role restriction)",
+        }
         _log(job_store, run_id, "perf_complete", {
             "avg_latency_ms": round(perf_metrics.get("avg_latency_ms", 0)),
             "p95_latency_ms": round(perf_metrics.get("p95_latency_ms", 0)),
@@ -441,7 +483,12 @@ async def run_pipeline(
         _update(job_store, run_id, 84, f"Running load test ({config.load_concurrent_users} concurrent users)…", "load")
         _log(job_store, run_id, "phase_start", {"phase": "load", "label": f"Load Test — {config.load_concurrent_users} concurrent users"})
         try:
-            load_metrics = await evaluate_load(config)
+            load_metrics = await evaluate_load(config) if "load" in phases else {
+                "tool_used": "locust", "concurrent_users": 0, "total_requests": 0,
+                "successful": 0, "errors": 0, "error_rate": 0.0, "avg_latency_ms": 0.0,
+                "p95_latency_ms": 0.0, "p99_latency_ms": 0.0, "requests_per_second": 0.0,
+                "passed": True, "assessment": "skipped (role restriction)",
+            }
         except Exception as load_err:
             print(f"[Pipeline] Load test failed: {load_err}")
             load_metrics = {

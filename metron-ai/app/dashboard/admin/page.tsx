@@ -19,7 +19,7 @@ interface TenantStats {
   total_runs_all_time: number;
 }
 
-const ROLES = ["viewer", "functional_tester", "security_tester", "all", "tenant_admin"];
+const ROLES = ["functional_tester", "security_tester", "quality", "performance", "load", "security+functional", "functional+quality", "performance+load", "all"];
 
 function roleColor(role: string) {
   return role === "tenant_admin" ? "bg-primary/10 text-primary"
