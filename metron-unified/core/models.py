@@ -310,6 +310,10 @@ class RunConfig(BaseModel):
     # Everything at and after the marker is discarded before evaluation.
     response_trim_marker: Optional[str] = None
 
+    # ── Email notifications ───────────────────────────────────────────────────
+    # If True, send the user an email when the run completes or fails.
+    notify_email: bool = False
+
     # ── Multiturn session mode ─────────────────────────────────────────────
     # Controls how METRON maintains conversation context across turns:
     #   session_id        → server tracks memory; use {{conversation_id}} in template where session ID goes
