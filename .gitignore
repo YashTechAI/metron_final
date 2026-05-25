@@ -82,6 +82,11 @@ build/
 # DeepEval
 .deepeval/
 
+# MLflow runtime artifacts (traces, runs, local DB)
+mlruns/
+mlflow.db
+*.db
+
 # OS
 .DS_Store
 *.swp
