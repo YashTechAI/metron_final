@@ -3,7 +3,6 @@ Master 8-stage pipeline orchestrator.
 Connects all stages, updates job_store progress at each stage,
 and handles the full lifecycle from AppProfile → AggregatedReport.
 """
-
 from __future__ import annotations
 import asyncio
 import os
