@@ -19,6 +19,7 @@ interface Project {
 export default function ProjectHub() {
   const router = useRouter();
   const [showModal, setShowModal] = useState(false);
+  const [orgName, setOrgName] = useState("");
 
   // Form state — basics only (test config lives in splitter/builder)
   const [projectName, setProjectName] = useState("");
@@ -34,6 +35,7 @@ export default function ProjectHub() {
 
   // Load persisted projects from API on mount
   useEffect(() => {
+    authFetch("/api/quota").then(r => r.ok ? r.json() : null).then(d => { if (d?.tenant_name) setOrgName(d.tenant_name); }).catch(() => {});
     console.log("[DashboardPage] Fetching projects from /api/projects...");
     authFetch("/api/projects")
       .then((r) => {
@@ -203,6 +205,9 @@ export default function ProjectHub() {
             <span className="w-1.5 h-1.5 rounded-full bg-primary" />
             <span className="text-[10px] font-black uppercase tracking-[0.2em] text-primary">Active Workspace</span>
           </div>
+          {orgName && (
+            <p className="text-[11px] font-black uppercase tracking-[0.25em] text-[var(--color-on-surface-variant)] opacity-50 mb-1">{orgName}</p>
+          )}
           <h1 className="font-headline text-5xl font-black text-[var(--color-on-surface)] tracking-tighter">Project Hub</h1>
           <p className="text-[var(--color-on-surface-variant)] text-sm font-medium opacity-60">Connect an AI system and run evaluations.</p>
         </div>

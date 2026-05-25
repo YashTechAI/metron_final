@@ -73,4 +73,19 @@ def get_current_user(request: Request) -> dict:
     user = verify_cognito_token(token)
     if not user:
         raise HTTPException(status_code=401, detail="Invalid or expired token")
+
+    from core import db as _db
+    super_admin_emails = [
+        e.strip()
+        for e in os.environ.get("SUPER_ADMIN_EMAILS", "").split(",")
+        if e.strip()
+    ]
+    db_user = _db.get_or_create_user(user["email"], super_admin_emails)
+    if db_user is None:
+        raise HTTPException(
+            status_code=403,
+            detail="Access denied. You have not been granted access to this platform. Contact your administrator."
+        )
+    user["role"]      = db_user.get("role", "viewer")
+    user["tenant_id"] = db_user.get("tenant_id") or ""
     return user

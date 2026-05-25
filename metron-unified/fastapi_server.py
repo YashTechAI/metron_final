@@ -49,6 +49,39 @@ app.add_middleware(
 jobs: Dict[str, Dict[str, Any]] = {}
 
 
+_PIPELINE_TIMEOUT_MINUTES = 90
+
+
+async def _reap_stuck_jobs():
+    """Background task: mark jobs stuck in running/queued for >90 min as failed."""
+    from datetime import datetime as _dt, timedelta
+    while True:
+        await asyncio.sleep(300)  # check every 5 minutes
+        try:
+            cutoff = _dt.utcnow() - timedelta(minutes=_PIPELINE_TIMEOUT_MINUTES)
+            for run_id, job in list(jobs.items()):
+                if job.get("status") not in ("running", "queued"):
+                    continue
+                ts_str = job.get("timestamp", "")
+                if not ts_str:
+                    continue
+                try:
+                    if _dt.fromisoformat(ts_str) < cutoff:
+                        msg = f"Run automatically stopped after {_PIPELINE_TIMEOUT_MINUTES} minutes."
+                        job["status"]  = "failed"
+                        job["error"]   = msg
+                        job["message"] = f"Timed out ({_PIPELINE_TIMEOUT_MINUTES} min limit)"
+                        print(f"[Reaper] Timed out run {run_id}")
+                        try:
+                            _db.mark_run_failed(run_id, msg)
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+        except Exception as e:
+            print(f"[Reaper] Error: {e}")
+
+
 @app.on_event("startup")
 async def _startup():
     """Init DB and re-populate in-memory jobs from recent completed/failed runs."""
@@ -77,6 +110,7 @@ async def _startup():
                 "token_summary": row.get("token_summary"),
             }
         print(f"[DB] Recovered {len(jobs)} recent runs from SQLite on startup.")
+        asyncio.create_task(_reap_stuck_jobs())
     except Exception as e:
         print(f"[DB] Startup recovery failed (non-fatal): {e}")
 
@@ -449,6 +483,11 @@ async def run_tests(
         except Exception:
             doc_text = ""
 
+    # ── Quota gate — check BEFORE creating the job ────────────────────────
+    quota_ok, quota_reason = _db.try_consume_quota(user["email"])
+    if not quota_ok:
+        raise HTTPException(status_code=429, detail=quota_reason)
+
     run_id = str(uuid.uuid4())
 
     # Fix 29: project_id comes from config (set by UI from dashboard [id]) or defaults to run_id
@@ -486,6 +525,7 @@ async def run_tests(
         doc_text=doc_text,
         project_id=project_id,
         user_email=user["email"],
+        user_role=user.get("role", "all"),
     )
 
     return {"run_id": run_id, "project_id": project_id}
@@ -725,6 +765,214 @@ async def delete_project(project_id: str, request: Request):
     if project.get("user_email") != user["email"]:
         raise HTTPException(status_code=403, detail="Not your project")
     _db.delete_project(project_id)
+    return {"ok": True}
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# GET /api/quota  — current user's quota status
+# ──────────────────────────────────────────────────────────────────────────
+@app.get("/api/quota")
+async def get_quota(request: Request):
+    user = get_current_user(request)
+    status = _db.get_quota_status(user["email"])
+    status["email"] = user["email"]
+    return status
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Tenant Admin endpoints  —  /api/admin/*
+# All require role = tenant_admin or super_admin
+# ──────────────────────────────────────────────────────────────────────────
+
+def _require_tenant_admin(user: dict) -> None:
+    if user.get("role") not in ("tenant_admin", "super_admin"):
+        raise HTTPException(403, "Tenant admin access required")
+
+
+def _require_super_admin(user: dict) -> None:
+    if user.get("role") != "super_admin":
+        raise HTTPException(403, "Super admin access required")
+
+
+@app.get("/api/admin/stats")
+async def admin_stats(request: Request):
+    user = get_current_user(request)
+    _require_tenant_admin(user)
+    result = _db.get_tenant_stats(user["tenant_id"])
+    result["admin_email"] = user["email"]
+    return result
+
+
+@app.get("/api/admin/runs")
+async def admin_list_runs(request: Request):
+    user = get_current_user(request)
+    _require_tenant_admin(user)
+    return {"runs": _db.get_tenant_runs(user["tenant_id"])}
+
+
+@app.get("/api/admin/users")
+async def admin_list_users(request: Request):
+    user = get_current_user(request)
+    _require_tenant_admin(user)
+    return {"users": _db.get_tenant_users(user["tenant_id"])}
+
+
+class _AddUserBody(BaseModel):
+    user_email: str
+    role: str = "viewer"
+    run_limit: int = 10
+
+
+@app.post("/api/admin/users")
+async def admin_add_user(body: _AddUserBody, request: Request):
+    from core.cognito_admin import invite_user
+    user = get_current_user(request)
+    _require_tenant_admin(user)
+    valid_roles = {"functional_tester", "security_tester", "quality", "performance", "load", "security+functional", "functional+quality", "performance+load", "all"}
+    if body.role not in valid_roles:
+        raise HTTPException(400, f"Invalid role. Must be one of: {sorted(valid_roles)}")
+    _db.add_user_to_tenant(body.user_email, user["tenant_id"], body.role, body.run_limit)
+    result = invite_user(body.user_email)
+    if not result["ok"]:
+        print(f"[Admin] Cognito invite failed for {body.user_email}: {result.get('error')} (user added to DB anyway)")
+    return {"ok": True, "invite_sent": result["ok"]}
+
+
+class _UpdateUserBody(BaseModel):
+    run_limit: Optional[int] = None
+    role: Optional[str] = None
+
+
+@app.put("/api/admin/users/{email}")
+async def admin_update_user(email: str, body: _UpdateUserBody, request: Request):
+    user = get_current_user(request)
+    _require_tenant_admin(user)
+    if body.run_limit is not None:
+        if not _db.update_user_limit(email, body.run_limit, user["tenant_id"]):
+            raise HTTPException(404, "User not found in your tenant")
+    if body.role is not None:
+        valid_roles = {"functional_tester", "security_tester", "quality", "performance", "load", "security+functional", "functional+quality", "performance+load", "all"}
+        if body.role not in valid_roles:
+            raise HTTPException(400, f"Invalid role. Must be one of: {sorted(valid_roles)}")
+        if not _db.update_user_role(email, body.role, user["tenant_id"]):
+            raise HTTPException(404, "User not found in your tenant")
+    return {"ok": True}
+
+
+@app.delete("/api/admin/users/{email}")
+async def admin_remove_user(email: str, request: Request):
+    from core.cognito_admin import delete_user
+    user = get_current_user(request)
+    _require_tenant_admin(user)
+    if not _db.remove_user(email, user["tenant_id"]):
+        raise HTTPException(404, "User not found in your tenant")
+    delete_user(email)
+    return {"ok": True}
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Super Admin endpoints  —  /api/super/*
+# All require role = super_admin
+# ──────────────────────────────────────────────────────────────────────────
+
+@app.get("/api/super/tenants")
+async def super_list_tenants(request: Request):
+    user = get_current_user(request)
+    _require_super_admin(user)
+    return {"tenants": _db.get_all_tenants()}
+
+
+class _CreateTenantBody(BaseModel):
+    name: str
+    quota_limit: int = 50
+
+
+@app.post("/api/super/tenants")
+async def super_create_tenant(body: _CreateTenantBody, request: Request):
+    user = get_current_user(request)
+    _require_super_admin(user)
+    tenant = _db.create_tenant(body.name, body.quota_limit)
+    return tenant
+
+
+class _UpdateTenantBody(BaseModel):
+    name: Optional[str] = None
+    quota_limit: Optional[int] = None
+
+
+@app.put("/api/super/tenants/{tenant_id}")
+async def super_update_tenant(tenant_id: str, body: _UpdateTenantBody, request: Request):
+    user = get_current_user(request)
+    _require_super_admin(user)
+    if not _db.update_tenant(tenant_id, body.name, body.quota_limit):
+        raise HTTPException(404, "Tenant not found")
+    return {"ok": True}
+
+
+@app.get("/api/super/tenants/{tenant_id}")
+async def super_get_tenant(tenant_id: str, request: Request):
+    user = get_current_user(request)
+    _require_super_admin(user)
+    detail = _db.get_tenant_detail(tenant_id)
+    if not detail:
+        raise HTTPException(404, "Tenant not found")
+    return detail
+
+
+@app.post("/api/super/tenants/{tenant_id}/reset-quota")
+async def super_reset_tenant_quota(tenant_id: str, request: Request):
+    user = get_current_user(request)
+    _require_super_admin(user)
+    if not _db.reset_tenant_quota(tenant_id):
+        raise HTTPException(404, "Tenant not found")
+    return {"ok": True}
+
+
+@app.post("/api/super/tenants/{tenant_id}/users")
+async def super_add_user_to_tenant(tenant_id: str, body: _AddUserBody, request: Request):
+    """Super admin can add/move any user into any tenant and invite them via Cognito."""
+    from core.cognito_admin import invite_user
+    user = get_current_user(request)
+    _require_super_admin(user)
+    _db.add_user_to_tenant(body.user_email, tenant_id, body.role, body.run_limit)
+    result = invite_user(body.user_email)
+    if not result["ok"]:
+        print(f"[Super] Cognito invite failed for {body.user_email}: {result.get('error')}")
+    return {"ok": True, "invite_sent": result["ok"]}
+
+
+@app.delete("/api/super/tenants/{tenant_id}/users/{email}")
+async def super_remove_user_from_tenant(tenant_id: str, email: str, request: Request):
+    """Remove a user from a tenant. If removing a tenant_admin, cascade-delete all their tenant's users."""
+    from core.cognito_admin import delete_user
+    user = get_current_user(request)
+    _require_super_admin(user)
+
+    # Check if the user being removed is a tenant_admin — if so, delete all users in the tenant
+    target = _db.get_user(email)
+    if target and target.get("role") == "tenant_admin":
+        all_users = _db.get_tenant_users(tenant_id)
+        for u in all_users:
+            _db.remove_user(u["user_email"], tenant_id)
+            delete_user(u["user_email"])
+    else:
+        _db.remove_user(email, tenant_id)
+        delete_user(email)
+    return {"ok": True}
+
+
+@app.delete("/api/super/tenants/{tenant_id}")
+async def super_delete_tenant(tenant_id: str, request: Request):
+    """Delete an entire tenant — removes all users from Cognito and DB, then deletes the tenant."""
+    from core.cognito_admin import delete_user
+    user = get_current_user(request)
+    _require_super_admin(user)
+    all_users = _db.get_tenant_users(tenant_id)
+    for u in all_users:
+        _db.remove_user(u["user_email"], tenant_id)
+        delete_user(u["user_email"])
+    if not _db.delete_tenant(tenant_id):
+        raise HTTPException(404, "Tenant not found")
     return {"ok": True}
 
 

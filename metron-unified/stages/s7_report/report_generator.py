@@ -38,14 +38,18 @@ def report_to_json(report: AggregatedReport) -> Dict[str, Any]:
     return data
 
 
-def generate_html_report(report: AggregatedReport) -> str:
+_FULL_RUN_ROLES = {"all", "tenant_admin", "super_admin"}
+
+
+def generate_html_report(report: AggregatedReport, user_role: str = "all") -> str:
     """Generate a styled HTML report string."""
+    is_full_run = user_role in _FULL_RUN_ROLES
     pct = int(report.health_score * 100)
     label = "Excellent" if pct >= 85 else "Good" if pct >= 70 else "Fair" if pct >= 55 else "Poor"
     color = _HEALTH_COLOR.get(label.lower(), "#666")
     ts = datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
 
-    # Build test class rows
+    # Build test class rows — skip phases that were not run (total == 0)
     class_rows = ""
     for cls_name, summary in report.test_classes.items():
         if hasattr(summary, "total"):
@@ -58,6 +62,8 @@ def generate_html_report(report: AggregatedReport) -> str:
             p = summary.get("passed", 0)
             f = summary.get("failed", 0)
             avg = summary.get("avg_score", 0.0)
+        if t == 0:
+            continue
         pct_cls = int(avg * 100)
         bg = "#d4edda" if avg >= 0.7 else "#fff3cd" if avg >= 0.5 else "#f8d7da"
         class_rows += f"""
@@ -232,6 +238,23 @@ def generate_html_report(report: AggregatedReport) -> str:
           <td style="color:{'#006e2f' if pct_p>=70 else '#ff8c00' if pct_p>=50 else '#ba1a1a'}">{pct_p}%</td>
         </tr>"""
 
+    passed_status = "PASSED" if report.passed else "NEEDS IMPROVEMENT"
+    role_label = user_role.replace("_", " ").replace("+", " + ").title()
+    if is_full_run:
+        _health_hero = (
+            f'<div style="display:flex;align-items:center;gap:16px;margin-bottom:16px">'
+            f'<span class="health-score">{pct}%</span>'
+            f'<div><div class="health-label">{label}</div>'
+            f'<div style="font-size:13px;opacity:0.6">{passed_status}</div></div></div>'
+        )
+    else:
+        _health_hero = (
+            f'<div style="display:flex;align-items:center;gap:16px;margin-bottom:16px">'
+            f'<span class="health-score" style="color:#00668a">{report.total_passed}/{report.total_tests}</span>'
+            f'<div><div class="health-label" style="color:#00668a">Tests Passed</div>'
+            f'<div style="font-size:13px;opacity:0.6">{role_label} run</div></div></div>'
+        )
+
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -269,13 +292,7 @@ def generate_html_report(report: AggregatedReport) -> str:
 
     <div class="card">
       <h2>Overall Health</h2>
-      <div style="display:flex;align-items:center;gap:16px;margin-bottom:16px">
-        <span class="health-score">{pct}%</span>
-        <div>
-          <div class="health-label">{label}</div>
-          <div style="font-size:13px;opacity:0.6">{"PASSED" if report.passed else "NEEDS IMPROVEMENT"}</div>
-        </div>
-      </div>
+      {_health_hero}
       <div class="meta-grid">
         <div class="meta-item">
           <div class="label">Total Tests</div>
