@@ -11,6 +11,9 @@ aiohttp>=3.9.0
 # ── LLM routing ─────────────────────────────────────────────────────────────
 litellm>=1.30.0
 
+# ── LLMOps: token tracking + traces via MLflow ───────────────────────────────
+mlflow-skinny>=2.13.0
+
 # ── LLM Provider SDKs ────────────────────────────────────────────────────────
 groq>=0.4.0
 google-generativeai>=0.4.0

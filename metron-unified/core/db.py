@@ -76,6 +76,11 @@ def init_db() -> None:
                     pass
             conn.execute("CREATE INDEX IF NOT EXISTS idx_runs_user ON runs(user_email)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_runs_tenant ON runs(tenant_id)")
+            # Migration: add token_summary_json column to existing databases
+            try:
+                conn.execute("ALTER TABLE runs ADD COLUMN token_summary_json TEXT")
+            except Exception:
+                pass  # column already exists
             # Mark any runs left in 'running' state as failed (crash recovery)
             conn.execute("UPDATE runs SET status='failed' WHERE status='running'")
             # Restore tenant_admin role: for each tenant with NO tenant_admin user,
@@ -214,6 +219,20 @@ def mark_run_failed(run_id: str, error: str) -> None:
             conn.close()
 
 
+def save_token_summary(run_id: str, token_summary: Dict[str, Any]) -> None:
+    """Persist the LLMOps token summary for a run so it survives server restarts."""
+    with _lock:
+        conn = _connect()
+        try:
+            conn.execute(
+                "UPDATE runs SET token_summary_json=? WHERE run_id=?",
+                (json.dumps(token_summary), run_id),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+
 def get_run(run_id: str) -> Optional[Dict[str, Any]]:
     """Fetch a single run by run_id. Returns None if not found."""
     with _lock:
@@ -318,7 +337,7 @@ def load_recent_jobs(hours: int = 24) -> List[Dict[str, Any]]:
         try:
             rows = conn.execute(
                 """
-                SELECT run_id, status, results_json, user_email, project_id
+                SELECT run_id, status, results_json, token_summary_json, user_email, project_id
                 FROM runs
                 WHERE timestamp >= ? AND status IN ('completed', 'failed')
                 ORDER BY timestamp DESC
@@ -336,6 +355,13 @@ def load_recent_jobs(hours: int = 24) -> List[Dict[str, Any]]:
                         d.pop("results_json", None)
                 else:
                     d.pop("results_json", None)
+                if d.get("token_summary_json"):
+                    try:
+                        d["token_summary"] = json.loads(d.pop("token_summary_json"))
+                    except Exception:
+                        d.pop("token_summary_json", None)
+                else:
+                    d.pop("token_summary_json", None)
                 result.append(d)
             return result
         finally:

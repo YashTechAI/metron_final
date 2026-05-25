@@ -27,6 +27,7 @@ from core.models import (
 )
 from core.adapters.chatbot import ChatbotAdapter
 from core import db as _db
+import core.mlflow_run as _mlflow_run
 from pipeline import run_pipeline
 from stages.s0_profile.document_parser import parse_document
 from stages.s0_profile.architecture_parser import parse_architecture_text, parse_architecture_image
@@ -84,6 +85,11 @@ async def _reap_stuck_jobs():
 @app.on_event("startup")
 async def _startup():
     """Init DB and re-populate in-memory jobs from recent completed/failed runs."""
+    _mlflow_run.configure(
+        tracking_uri=os.environ.get("MLFLOW_TRACKING_URI", ""),
+        experiment_name=os.environ.get("MLFLOW_EXPERIMENT_NAME", "metron-llmops"),
+    )
+    _mlflow_run.setup_autolog()
     try:
         _db.init_db()
         for row in _db.load_recent_jobs(hours=24):
@@ -101,6 +107,7 @@ async def _startup():
                 "user_email":    row.get("user_email", ""),
                 "project_id":    row.get("project_id", ""),
                 "eval_warnings": [],
+                "token_summary": row.get("token_summary"),
             }
         print(f"[DB] Recovered {len(jobs)} recent runs from SQLite on startup.")
         asyncio.create_task(_reap_stuck_jobs())
@@ -587,6 +594,24 @@ async def get_job_results(run_id: str, request: Request):
     if job["status"] == "failed":
         raise HTTPException(500, job.get("error", "Pipeline failed"))
     return job["results"]
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# GET /api/job/{run_id}/token-summary — LLMOps: token usage for a run
+# ──────────────────────────────────────────────────────────────────────────
+@app.get("/api/job/{run_id}/token-summary")
+async def get_token_summary(run_id: str, request: Request):
+    user = get_current_user(request)
+    job = jobs.get(run_id)
+    if not job:
+        raise HTTPException(404, "Job not found")
+    _check_job_ownership(job, user["email"])
+    return job.get("token_summary", {
+        "total_calls": 0,
+        "total_tokens": 0,
+        "estimated_cost_usd": 0.0,
+        "message": "Token data not yet available",
+    })
 
 
 # ──────────────────────────────────────────────────────────────────────────

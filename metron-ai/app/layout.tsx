@@ -16,7 +16,7 @@ const manrope = Manrope({
 });
 
 export const metadata: Metadata = {
-  title: "MetronAI — Enterprise AI QA Intelligence",
+  title: "MetronAI Enterprise AI QA Intelligence",
   description:
     "MetronAI provides a comprehensive AI QA platform for testing Chatbots, RAG Systems, and Autonomous Agents with Functional, Performance, Security, and Load testing.",
 };
