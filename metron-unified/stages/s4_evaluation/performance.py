@@ -155,7 +155,7 @@ async def evaluate_performance(
         response_field=config.response_field,
         auth_type=config.auth_type,
         auth_token=config.auth_token,
-        timeout=getattr(config, "adapter_timeout", 60),
+        timeout=30,
         request_template=getattr(config, "request_template", None),
         response_trim_marker=getattr(config, "response_trim_marker", None),
     )

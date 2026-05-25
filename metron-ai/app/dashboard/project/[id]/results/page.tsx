@@ -139,6 +139,25 @@ interface RCAReport {
   top_causes: RCAFinding[];
 }
 
+interface StageTotals { calls: number; total_tokens: number; cost_usd: number; }
+interface TokenSummary {
+  total_calls: number;
+  total_prompt_tokens: number;
+  total_completion_tokens: number;
+  total_tokens: number;
+  estimated_cost_usd: number;
+  avg_latency_ms: number;
+  tpot_ms: number;
+  token_efficiency_ratio: number;
+  tpm_velocity: number;
+  retry_count: number;
+  truncated_calls: number;
+  truncation_rate: number;
+  models_used: Record<string, number>;
+  by_stage: Record<string, StageTotals>;
+  mlflow_run_id?: string;
+}
+
 interface FullResults {
   run_id: string;
   health_score: number;
@@ -316,6 +335,7 @@ function ResultsContent() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [activeTab, setActiveTab] = useState(0);
+  const [tokenData, setTokenData] = useState<TokenSummary | null>(null);
 
   useEffect(() => {
     const runId =
@@ -357,6 +377,11 @@ function ResultsContent() {
         );
         setResults(withPasses);
         setLoading(false);
+        // Fetch token summary from MLflow (best-effort, silent on failure)
+        authFetch(`${API}/api/job/${runId}/token-summary`)
+          .then(r => r.ok ? r.json() : null)
+          .then(data => { if (data?.total_tokens > 0) setTokenData(data as TokenSummary); })
+          .catch(() => {});
       })
       .catch((e) => {
         setError(e.message);
@@ -558,6 +583,7 @@ ${rcaSection}`;
     ...(results.rag ? ["RAG"] : []),
     "Performance", "Load Test",
     ...(results.rca ? ["RCA"] : []),
+    "LLMOps",
     "Export",
   ];
 
@@ -635,13 +661,15 @@ ${rcaSection}`;
           {/* ── Performance / Load / RCA / Export — indices shift with optional RAG tab ── */}
           {(() => {
             const base = results.rag ? 4 : 3;
-            const rcaIdx   = results.rca ? base + 2 : -1;
-            const exportIdx = results.rca ? base + 3 : base + 2;
+            const rcaIdx    = results.rca ? base + 2 : -1;
+            const llmopsIdx = results.rca ? base + 3 : base + 2;
+            const exportIdx = results.rca ? base + 4 : base + 3;
             return (
               <>
                 {activeTab === base     && <PerformanceTab data={results.performance} />}
                 {activeTab === base + 1 && <LoadTab data={results.load} />}
                 {results.rca && activeTab === rcaIdx && <RCATab data={results.rca} />}
+                {activeTab === llmopsIdx && <LLMOpsTab data={tokenData} />}
                 {activeTab === exportIdx && (
             <div className="space-y-4">
               <p className="text-sm text-[var(--color-on-surface-variant)] opacity-70">Download the test results in various formats.</p>
@@ -890,7 +918,7 @@ function SecurityTab({ data, onManualPass, onManualRevert }: { data: PhaseSummar
             >
               <div className="flex items-center gap-3">
                 <span className={`material-symbols-outlined text-base ${passed === results.length ? "text-secondary" : "text-error"}`}>
-                  {passed === results.length ? "shield" : "gpp_bad"}
+                  {passed === results.length ? "shield" : "shield_with_warning"}
                 </span>
                 <p className="text-sm font-black">{metricLabel(cat)}</p>
               </div>
@@ -1531,6 +1559,189 @@ function EmptyState() {
     <div className="py-12 text-center space-y-2">
       <span className="material-symbols-outlined text-3xl text-[var(--color-on-surface-variant)] opacity-30">data_usage</span>
       <p className="text-sm text-[var(--color-on-surface-variant)] opacity-50">No data available for this phase.</p>
+    </div>
+  );
+}
+
+// ─────────────────────── LLMOps Tab ────────────────────────────────────────
+const STAGE_LABELS: Record<string, string> = {
+  s0: "S0 Profile",
+  s1: "S1 Personas",
+  s2: "S2 Test Gen",
+  s3: "S3 Execution",
+  s4: "S4 Eval",
+  s5: "S5 Aggregate",
+  s7: "S7 Report",
+  s8: "S8 RCA",
+  unknown: "Other",
+};
+
+function LLMOpsTab({ data }: { data: TokenSummary | null }) {
+  const mlflowUrl = process.env.NEXT_PUBLIC_MLFLOW_URL;
+
+  if (!data || data.total_tokens === 0) {
+    return (
+      <div className="py-16 text-center space-y-3">
+        <span className="material-symbols-outlined text-4xl text-[var(--color-on-surface-variant)] opacity-30">monitoring</span>
+        <p className="text-sm font-semibold text-[var(--color-on-surface-variant)] opacity-60">No LLM usage data available</p>
+        <p className="text-xs text-[var(--color-on-surface-variant)] opacity-40">Set MLFLOW_TRACKING_URI on the backend to enable token tracking.</p>
+      </div>
+    );
+  }
+
+  const {
+    total_calls, total_prompt_tokens, total_completion_tokens, total_tokens,
+    avg_latency_ms, tpot_ms = 0, token_efficiency_ratio = 0, tpm_velocity = 0,
+    retry_count = 0, truncated_calls = 0, truncation_rate = 0,
+    models_used = {}, by_stage,
+  } = data;
+
+  const stageEntries = Object.entries(by_stage).sort((a, b) => b[1].total_tokens - a[1].total_tokens);
+  const maxStageTokens = stageEntries[0]?.[1].total_tokens || 1;
+  const promptPct = total_tokens > 0 ? Math.round((total_prompt_tokens / total_tokens) * 100) : 0;
+
+  const modelEntries = Object.entries(models_used).sort((a, b) => b[1] - a[1]);
+
+  return (
+    <div className="space-y-8">
+
+      {/* Row 1 — Token counts */}
+      <div>
+        <p className="text-xs font-bold uppercase tracking-widest text-[var(--color-on-surface-variant)] opacity-60 mb-3">Token Counts</p>
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+          {[
+            { label: "LLM Calls",        value: total_calls.toLocaleString(),                    color: "text-primary" },
+            { label: "Input Tokens",      value: total_prompt_tokens.toLocaleString(),            color: "text-[var(--color-on-surface)]" },
+            { label: "Output Tokens",     value: total_completion_tokens.toLocaleString(),        color: "text-[var(--color-on-surface)]" },
+            { label: "Total Tokens",      value: total_tokens.toLocaleString(),                   color: "text-secondary" },
+          ].map(c => (
+            <div key={c.label} className="p-4 rounded-xl bg-[var(--color-surface-container-low)] text-center">
+              <p className={`font-headline text-2xl font-black ${c.color}`}>{c.value}</p>
+              <p className="text-xs text-[var(--color-on-surface-variant)] opacity-60 mt-0.5">{c.label}</p>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Row 2 — Performance metrics */}
+      <div>
+        <p className="text-xs font-bold uppercase tracking-widest text-[var(--color-on-surface-variant)] opacity-60 mb-3">Performance</p>
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+          {[
+            { label: "Avg Call Latency",   value: avg_latency_ms > 0 ? `${avg_latency_ms.toFixed(0)}ms` : "—",   color: "text-[#855300]",
+              tip: "Average latency of METRON's internal LLM calls — not the target AI's response time" },
+            { label: "TPOT",              value: tpot_ms > 0 ? `${tpot_ms.toFixed(1)}ms/tok` : "—",            color: "text-[#855300]",
+              tip: "Time Per Output Token — total latency ÷ total output tokens" },
+            { label: "TPM Velocity",      value: tpm_velocity > 0 ? `${tpm_velocity.toFixed(0)}/min` : "—",    color: "text-primary",
+              tip: "Tokens processed per minute over the full pipeline run" },
+            { label: "Token Efficiency",  value: token_efficiency_ratio > 0 ? token_efficiency_ratio.toFixed(3) : "—", color: "text-secondary",
+              tip: "Output tokens ÷ Input tokens — higher = more output per prompt" },
+          ].map(c => (
+            <div key={c.label} className="p-4 rounded-xl bg-[var(--color-surface-container-low)] text-center" title={"tip" in c ? c.tip : undefined}>
+              <p className={`font-headline text-2xl font-black ${c.color}`}>{c.value}</p>
+              <p className="text-xs text-[var(--color-on-surface-variant)] opacity-60 mt-0.5">{c.label}</p>
+              {c.label === "Avg Call Latency" && (
+                <p className="text-[10px] text-[var(--color-on-surface-variant)] opacity-35 mt-0.5">METRON internal calls</p>
+              )}
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Row 3 — Reliability */}
+      <div>
+        <p className="text-xs font-bold uppercase tracking-widest text-[var(--color-on-surface-variant)] opacity-60 mb-3">Reliability</p>
+        <div className="grid grid-cols-2 gap-4">
+          <div className="p-4 rounded-xl bg-[var(--color-surface-container-low)] flex items-center gap-4">
+            <span className="material-symbols-outlined text-3xl text-[var(--color-on-surface-variant)] opacity-40">content_cut</span>
+            <div>
+              <p className="font-headline text-xl font-black text-[var(--color-on-surface)]">
+                {(truncation_rate * 100).toFixed(1)}%
+                <span className="text-sm font-normal opacity-60 ml-1">({truncated_calls} calls)</span>
+              </p>
+              <p className="text-xs text-[var(--color-on-surface-variant)] opacity-60">Truncation Rate</p>
+              <p className="text-[11px] text-[var(--color-on-surface-variant)] opacity-40 mt-0.5">Calls where max token limit was hit</p>
+            </div>
+          </div>
+          <div className="p-4 rounded-xl bg-[var(--color-surface-container-low)] flex items-center gap-4">
+            <span className="material-symbols-outlined text-3xl text-[var(--color-on-surface-variant)] opacity-40">replay</span>
+            <div>
+              <p className="font-headline text-xl font-black text-[var(--color-on-surface)]">{retry_count}</p>
+              <p className="text-xs text-[var(--color-on-surface-variant)] opacity-60">Retry Count</p>
+              <p className="text-[11px] text-[var(--color-on-surface-variant)] opacity-40 mt-0.5">Rate-limit backoffs + timeout retries</p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Row 4 — Token breakdown by stage */}
+      {stageEntries.length > 0 && (
+        <div className="space-y-3">
+          <p className="text-xs font-bold uppercase tracking-widest text-[var(--color-on-surface-variant)] opacity-60">Token Breakdown by Stage</p>
+          <div className="space-y-2">
+            {stageEntries.map(([stage, s]) => {
+              const barPct = Math.round((s.total_tokens / maxStageTokens) * 100);
+              return (
+                <div key={stage} className="flex items-center gap-3">
+                  <span className="text-xs font-mono w-24 shrink-0 text-[var(--color-on-surface-variant)]">
+                    {STAGE_LABELS[stage as keyof typeof STAGE_LABELS] ?? stage}
+                  </span>
+                  <div className="flex-1 h-5 rounded-full bg-[var(--color-surface-container-low)] overflow-hidden">
+                    <div className="h-full rounded-full bg-primary opacity-70 transition-all" style={{ width: `${barPct}%` }} />
+                  </div>
+                  <span className="text-xs text-[var(--color-on-surface-variant)] opacity-70 w-40 shrink-0 text-right">
+                    {s.calls} calls · {s.total_tokens.toLocaleString()} tokens
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* Row 5 — Input vs Output split */}
+      {(total_prompt_tokens > 0 || total_completion_tokens > 0) && (
+        <div className="space-y-2">
+          <p className="text-xs font-bold uppercase tracking-widest text-[var(--color-on-surface-variant)] opacity-60">Input vs Output Tokens</p>
+          <div className="h-5 rounded-full overflow-hidden flex">
+            <div className="h-full bg-primary opacity-70" style={{ width: `${promptPct}%` }} />
+            <div className="h-full bg-secondary opacity-50 flex-1" />
+          </div>
+          <div className="flex justify-between text-xs text-[var(--color-on-surface-variant)] opacity-60">
+            <span>Input: {total_prompt_tokens.toLocaleString()} ({promptPct}%)</span>
+            <span>Output: {total_completion_tokens.toLocaleString()} ({100 - promptPct}%)</span>
+          </div>
+        </div>
+      )}
+
+      {/* Row 6 — Models used */}
+      {modelEntries.length > 0 && (
+        <div className="space-y-3">
+          <p className="text-xs font-bold uppercase tracking-widest text-[var(--color-on-surface-variant)] opacity-60">Models Used</p>
+          <div className="flex flex-wrap gap-2">
+            {modelEntries.map(([model, calls]) => (
+              <span
+                key={model}
+                className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-mono bg-[var(--color-surface-container-low)] text-[var(--color-on-surface-variant)]"
+              >
+                <span className="w-1.5 h-1.5 rounded-full bg-primary opacity-70 shrink-0" />
+                {model}
+                <span className="opacity-50 ml-0.5">· {calls} calls</span>
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Footer */}
+      {mlflowUrl && (
+        <p className="text-xs text-[var(--color-on-surface-variant)] opacity-50 text-center">
+          Full per-call traces available in{" "}
+          <a href={mlflowUrl} target="_blank" rel="noopener noreferrer" className="underline hover:opacity-100">
+            MLflow UI ↗
+          </a>
+        </p>
+      )}
     </div>
   );
 }

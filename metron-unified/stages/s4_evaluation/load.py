@@ -101,27 +101,9 @@ _LOCUST_FILE_TEMPLATE = textwrap.dedent("""\
                         if _valid or not _RESPONSE_FIELD:
                             response.success()
                         else:
-                            # A2A auto-detection: walk result.artifacts[].parts[] for type=text
-                            _a2a_text = ""
-                            try:
-                                _artifacts = (data.get("result") or {{}}).get("artifacts") or []
-                                for _artifact in _artifacts:
-                                    for _p in _artifact.get("parts") or []:
-                                        if isinstance(_p, dict) and _p.get("type") == "text":
-                                            _t = _p.get("text", "")
-                                            if _t:
-                                                _a2a_text = _t
-                                                break
-                                    if _a2a_text:
-                                        break
-                            except Exception:
-                                pass
-                            if _a2a_text:
-                                response.success()
-                            else:
-                                response.failure(
-                                    f"Field '{{_RESPONSE_FIELD}}' not found in response"
-                                )
+                            response.failure(
+                                f"Field '{{_RESPONSE_FIELD}}' not found in response"
+                            )
                     except Exception as exc:
                         response.failure(f"JSON parse error: {{exc}}")
                 else:
