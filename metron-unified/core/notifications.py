@@ -125,7 +125,7 @@ def notify_run_complete(
       </div>
 
       <div style="background: #f9f9f9; padding: 32px; border-radius: 0 0 12px 12px; border: 1px solid #e0e0e0;">
-        <h2 style="color: #1a1a1a; margin-top: 0;">Your test run is complete ✅</h2>
+        <h2 style="color: #1a1a1a; margin-top: 0;">Your test run is complete</h2>
 
         <table style="width: 100%; border-collapse: collapse; margin: 20px 0;">
           <tr>
@@ -165,7 +165,7 @@ def notify_run_complete(
 
     _send_raw(
         to_email=user_email,
-        subject=f"MetronAI — {agent_name or 'Run'} complete {'✅' if passed else '❌'} ({round(health_score * 100) if health_score else total_passed}/{total_tests})",
+        subject=f"MetronAI — {agent_name or 'Run'} complete ({round(health_score * 100) if health_score else total_passed}/{total_tests})",
         body_html=body,
         attachment_html=report_html,
         attachment_filename=filename,
