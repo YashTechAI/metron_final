@@ -116,33 +116,31 @@ interface LoadMetrics {
   tool_used: string;
 }
 
-interface RCAFinding {
-  rank: number;
-  id: string;
-  label: string;
-  reason?: string;
-  category: string;
-  category_id: string;
-  probability: number;
-  affected_count: number;
-  evidence: string[];
-  remediation: string;
-}
 
-interface RCAReport {
-  total_failed: number;
-  total_analyzed: number;
-  relevant_points: number;
-  filtered_points: number;
-  architecture_summary: Record<string, unknown>;
-  signal_summary: Record<string, number>;
-  top_causes: RCAFinding[];
+interface StageTotals { calls: number; total_tokens: number; cost_usd: number; }
+interface TokenSummary {
+  total_calls: number;
+  total_prompt_tokens: number;
+  total_completion_tokens: number;
+  total_tokens: number;
+  estimated_cost_usd: number;
+  avg_latency_ms: number;
+  tpot_ms: number;
+  token_efficiency_ratio: number;
+  tpm_velocity: number;
+  retry_count: number;
+  truncated_calls: number;
+  truncation_rate: number;
+  models_used: Record<string, number>;
+  by_stage: Record<string, StageTotals>;
+  mlflow_run_id?: string;
 }
 
 interface FullResults {
   run_id: string;
   health_score: number;
   passed: boolean;
+  user_role?: string;
   domain: string;
   agent_name: string;
   config_summary: Record<string, unknown>;
@@ -152,7 +150,6 @@ interface FullResults {
   rag?: PhaseSummary;
   performance: PerformanceMetrics;
   load: LoadMetrics;
-  rca?: RCAReport;
   personas: Array<{ id: string; name: string; description: string; traits: string[] }>;
   persona_breakdown: Array<{
     persona_id: string;
@@ -316,6 +313,7 @@ function ResultsContent() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [activeTab, setActiveTab] = useState(0);
+  const [tokenData, setTokenData] = useState<TokenSummary | null>(null);
 
   useEffect(() => {
     const runId =
@@ -357,6 +355,11 @@ function ResultsContent() {
         );
         setResults(withPasses);
         setLoading(false);
+        // Fetch token summary from MLflow (best-effort, silent on failure)
+        authFetch(`${API}/api/job/${runId}/token-summary`)
+          .then(r => r.ok ? r.json() : null)
+          .then(data => { if (data?.total_tokens > 0) setTokenData(data as TokenSummary); })
+          .catch(() => {});
       })
       .catch((e) => {
         setError(e.message);
@@ -479,49 +482,42 @@ function ResultsContent() {
     if (!results) return;
     const r = results;
 
-    const rcaSection = r.rca ? `
-## Root Cause Analysis
-> Analysed ${r.rca.total_analyzed} results · ${r.rca.total_failed} failures · ${r.rca.relevant_points} relevant failure points (${r.rca.filtered_points} excluded by architecture filter)
 
-### Observed Signals
-${Object.entries(r.rca.signal_summary).map(([k, v]) => `- ${k.replace(/_/g, " ")}: ${v}`).join("\n")}
+    const isFullRunMd = ["all", "tenant_admin", "super_admin"].includes(r.user_role ?? "all");
+    const scoreLineMd = isFullRunMd
+      ? `Health Score: ${(r.health_score * 100).toFixed(1)}% | ${r.passed ? "PASSED" : "FAILED"}`
+      : `Tests Passed: ${r.total_passed}/${r.total_tests} | ${(r.user_role ?? "").replace(/_/g, " ")} run`;
 
-### Top Probable Root Causes
-${r.rca.top_causes.map(c => {
-  const pct = Math.round(c.probability * 100);
-  const level = pct >= 70 ? "🔴 HIGH" : pct >= 45 ? "🟠 MEDIUM" : "🔵 LOW";
-  return `#### #${c.rank} [${c.id}] ${c.label}
-- **Category:** ${c.category}
-- **Probability:** ${pct}% ${level}
-- **Affected:** ${c.affected_count} prompt(s)
-- **Evidence:** ${c.evidence.slice(0, 2).join("; ")}
-- **Fix:** ${c.remediation}`;
-}).join("\n\n")}
-` : "";
+    const summaryRows = [
+      (r.functional?.total ?? 0) > 0 ? `| Functional | ${r.functional!.passed} | ${r.functional!.total} | ${r.functional!.pass_rate}% |` : null,
+      (r.security?.total ?? 0) > 0   ? `| Security   | ${r.security!.passed}   | ${r.security!.total}   | ${r.security!.pass_rate}% |`   : null,
+      (r.quality?.total ?? 0) > 0    ? `| Quality    | ${r.quality!.passed}    | ${r.quality!.total}    | ${r.quality!.pass_rate}% |`    : null,
+    ].filter(Boolean).join("\n");
+
+    const perfSection = (r.performance?.avg_latency ?? 0) > 0 ? `
+## Performance
+- Avg Latency: ${(r.performance!.avg_latency ?? 0).toFixed(0)}ms
+- P95: ${(r.performance!.p95_latency ?? 0).toFixed(0)}ms
+- Throughput: ${(r.performance!.throughput ?? 0).toFixed(2)} req/s
+- Error Rate: ${(r.performance!.error_rate ?? 0).toFixed(1)}%` : "";
+
+    const loadSection = (r.load?.requests_per_second ?? 0) > 0 ? `
+## Load Test
+- Concurrent Users: ${r.load!.concurrent_users ?? 0}
+- Throughput: ${(r.load!.requests_per_second ?? 0).toFixed(2)} req/s
+- Error Rate: ${(r.load!.error_rate ?? 0).toFixed(1)}%` : "";
 
     const md = `# METRON QA Report
 Generated: ${new Date().toLocaleString()}
 Agent: ${r.agent_name || "—"} | Domain: ${r.domain}
-Health Score: ${(r.health_score * 100).toFixed(1)}% | ${r.passed ? "PASSED" : "FAILED"}
+${scoreLineMd}
 
 ## Summary
 | Phase | Passed | Total | Pass Rate |
 |-------|--------|-------|-----------|
-| Functional | ${r.functional?.passed ?? 0} | ${r.functional?.total ?? 0} | ${r.functional?.pass_rate ?? 0}% |
-| Security | ${r.security?.passed ?? 0} | ${r.security?.total ?? 0} | ${r.security?.pass_rate ?? 0}% |
-| Quality | ${r.quality?.passed ?? 0} | ${r.quality?.total ?? 0} | ${r.quality?.pass_rate ?? 0}% |
-
-## Performance
-- Avg Latency: ${(r.performance?.avg_latency ?? 0).toFixed(0)}ms
-- P95: ${(r.performance?.p95_latency ?? 0).toFixed(0)}ms
-- Throughput: ${(r.performance?.throughput ?? 0).toFixed(2)} req/s
-- Error Rate: ${(r.performance?.error_rate ?? 0).toFixed(1)}%
-
-## Load Test
-- Concurrent Users: ${r.load?.concurrent_users ?? 0}
-- Throughput: ${(r.load?.requests_per_second ?? 0).toFixed(2)} req/s
-- Error Rate: ${(r.load?.error_rate ?? 0).toFixed(1)}%
-${rcaSection}`;
+${summaryRows}
+${perfSection}
+${loadSection}`;
     const blob = new Blob([md], { type: "text/markdown" });
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
@@ -552,12 +548,38 @@ ${rcaSection}`;
 
   const healthPct = Math.round(results.health_score * 100);
   const healthColor = healthPct >= 70 ? "text-secondary" : healthPct >= 40 ? "text-[#855300]" : "text-error";
+  const isFullRun = ["all", "tenant_admin", "super_admin"].includes(results.user_role ?? "all");
+
+  const _KNOWN_PHASES = new Set(["functional", "security", "quality", "performance", "load"]);
+  const _ROLE_PHASES: Record<string, Set<string>> = {
+    "functional_tester":   new Set(["functional"]),
+    "security_tester":     new Set(["security"]),
+    "quality":             new Set(["quality"]),
+    "performance":         new Set(["performance"]),
+    "load":                new Set(["load"]),
+    "security+functional": new Set(["security", "functional"]),
+    "functional+quality":  new Set(["functional", "quality"]),
+    "performance+load":    new Set(["performance", "load"]),
+    "all":                 _KNOWN_PHASES,
+    "tenant_admin":        _KNOWN_PHASES,
+    "super_admin":         _KNOWN_PHASES,
+  };
+  const _resolvePhases = (role: string): Set<string> => {
+    if (_ROLE_PHASES[role]) return _ROLE_PHASES[role];
+    // Dynamic: "functional+security+load" → parse each part
+    const parts = new Set(role.split("+").filter(p => _KNOWN_PHASES.has(p)));
+    return parts.size > 0 ? parts : _KNOWN_PHASES;
+  };
+  const activePhases = _resolvePhases(results.user_role ?? "all");
 
   const TABS = [
-    "Functional", "Security", "Quality",
-    ...(results.rag ? ["RAG"] : []),
-    "Performance", "Load Test",
-    ...(results.rca ? ["RCA"] : []),
+    ...(activePhases.has("functional") ? ["Functional"] : []),
+    ...(activePhases.has("security") ? ["Security"] : []),
+    ...(activePhases.has("quality") ? ["Quality"] : []),
+    ...(results.rag && activePhases.has("functional") ? ["RAG"] : []),
+    ...(activePhases.has("performance") ? ["Performance"] : []),
+    ...(activePhases.has("load") ? ["Load Test"] : []),
+    "LLMOps",
     "Export",
   ];
 
@@ -576,25 +598,37 @@ ${rcaSection}`;
           <p className="text-[var(--color-on-surface-variant)] text-sm opacity-60">{results.domain}</p>
         </div>
 
-        {/* Health Score */}
+        {/* Score card — health score for full runs, passed/total for partial */}
         <div className="card p-6 flex flex-col items-center gap-2 min-w-[140px]">
-          <p className="text-xs font-bold uppercase tracking-widest text-[var(--color-on-surface-variant)] opacity-60">Health Score</p>
-          <p className={`font-headline text-5xl font-black ${healthColor}`}>{healthPct}%</p>
-          <span className={`text-xs font-bold px-3 py-1 rounded-full ${results.passed ? "badge-pass" : "badge-fail"}`}>
-            {results.passed ? "PASSED" : "FAILED"}
-          </span>
+          {isFullRun ? (
+            <>
+              <p className="text-xs font-bold uppercase tracking-widest text-[var(--color-on-surface-variant)] opacity-60">Health Score</p>
+              <p className={`font-headline text-5xl font-black ${healthColor}`}>{healthPct}%</p>
+              <span className={`text-xs font-bold px-3 py-1 rounded-full ${results.passed ? "badge-pass" : "badge-fail"}`}>
+                {results.passed ? "PASSED" : "FAILED"}
+              </span>
+            </>
+          ) : (
+            <>
+              <p className="text-xs font-bold uppercase tracking-widest text-[var(--color-on-surface-variant)] opacity-60">Tests Passed</p>
+              <p className="font-headline text-5xl font-black text-primary">{results.total_passed}/{results.total_tests}</p>
+              <span className="text-xs font-bold text-[var(--color-on-surface-variant)] opacity-60 capitalize">
+                {(results.user_role ?? "").replace(/_/g, " ")}
+              </span>
+            </>
+          )}
         </div>
       </div>
 
-      {/* Summary Cards */}
+      {/* Summary Cards — only show phases that were run */}
       <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
         {[
-          { label: "Functional", icon: "science", color: "text-primary", value: results.functional ? `${results.functional.passed}/${results.functional.total}` : "—", sub: results.functional ? `${results.functional.pass_rate}%` : "" },
-          { label: "Security", icon: "security", color: "text-error", value: results.security ? `${results.security.passed}/${results.security.total}` : "—", sub: results.security ? `${results.security.pass_rate}%` : "" },
-          { label: "Quality", icon: "grade", color: "text-secondary", value: results.quality ? `${results.quality.passed}/${results.quality.total}` : "—", sub: results.quality ? `${results.quality.pass_rate}%` : "" },
-          { label: "Performance", icon: "speed", color: "text-[#855300]", value: results.performance ? `${(results.performance.avg_latency ?? 0).toFixed(0)}ms` : "—", sub: "avg latency" },
-          { label: "Load", icon: "group", color: "text-[var(--color-on-surface-variant)]", value: results.load ? `${(results.load.error_rate ?? 0).toFixed(1)}%` : "—", sub: "error rate" },
-        ].map((item) => (
+          { label: "Functional", phase: "functional", icon: "science", color: "text-primary", value: results.functional ? `${results.functional.passed}/${results.functional.total}` : "—", sub: results.functional ? `${results.functional.pass_rate}%` : "" },
+          { label: "Security", phase: "security", icon: "security", color: "text-error", value: results.security ? `${results.security.passed}/${results.security.total}` : "—", sub: results.security ? `${results.security.pass_rate}%` : "" },
+          { label: "Quality", phase: "quality", icon: "grade", color: "text-secondary", value: results.quality ? `${results.quality.passed}/${results.quality.total}` : "—", sub: results.quality ? `${results.quality.pass_rate}%` : "" },
+          { label: "Performance", phase: "performance", icon: "speed", color: "text-[#855300]", value: results.performance ? `${(results.performance.avg_latency ?? 0).toFixed(0)}ms` : "—", sub: "avg latency" },
+          { label: "Load", phase: "load", icon: "group", color: "text-[var(--color-on-surface-variant)]", value: results.load ? `${(results.load.error_rate ?? 0).toFixed(1)}%` : "—", sub: "error rate" },
+        ].filter(item => activePhases.has(item.phase)).map((item) => (
           <div key={item.label} className="card p-4 text-center">
             <span className={`material-symbols-outlined text-xl ${item.color}`}>{item.icon}</span>
             <p className="font-headline text-2xl font-black text-[var(--color-on-surface)] mt-1">{item.value}</p>
@@ -620,29 +654,14 @@ ${rcaSection}`;
 
         {/* Tab content */}
         <div className="p-6">
-          {/* ── Tab 0: Functional ── */}
-          {activeTab === 0 && <FunctionalTab data={results.functional} personaBreakdown={results.persona_breakdown} onManualPass={(id) => handleManualPass("functional", id)} onManualRevert={(id) => handleManualRevert("functional", id)} />}
-
-          {/* ── Tab 1: Security ── */}
-          {activeTab === 1 && <SecurityTab data={results.security} onManualPass={(id) => handleManualPass("security", id)} onManualRevert={(id) => handleManualRevert("security", id)} />}
-
-          {/* ── Tab 2: Quality ── */}
-          {activeTab === 2 && <QualityTab data={results.quality} onManualPass={(id) => handleManualPass("quality", id)} onManualRevert={(id) => handleManualRevert("quality", id)} />}
-
-          {/* ── Tab 3: RAG (only present in RAG mode) ── */}
-          {results.rag && activeTab === 3 && <RAGTab data={results.rag} onManualPass={(id) => handleManualPass("rag", id)} onManualRevert={(id) => handleManualRevert("rag", id)} />}
-
-          {/* ── Performance / Load / RCA / Export — indices shift with optional RAG tab ── */}
-          {(() => {
-            const base = results.rag ? 4 : 3;
-            const rcaIdx   = results.rca ? base + 2 : -1;
-            const exportIdx = results.rca ? base + 3 : base + 2;
-            return (
-              <>
-                {activeTab === base     && <PerformanceTab data={results.performance} />}
-                {activeTab === base + 1 && <LoadTab data={results.load} />}
-                {results.rca && activeTab === rcaIdx && <RCATab data={results.rca} />}
-                {activeTab === exportIdx && (
+          {TABS[activeTab] === "Functional" && <FunctionalTab data={results.functional} personaBreakdown={results.persona_breakdown} onManualPass={(id) => handleManualPass("functional", id)} onManualRevert={(id) => handleManualRevert("functional", id)} />}
+          {TABS[activeTab] === "Security" && <SecurityTab data={results.security} onManualPass={(id) => handleManualPass("security", id)} onManualRevert={(id) => handleManualRevert("security", id)} />}
+          {TABS[activeTab] === "Quality" && <QualityTab data={results.quality} onManualPass={(id) => handleManualPass("quality", id)} onManualRevert={(id) => handleManualRevert("quality", id)} />}
+          {TABS[activeTab] === "RAG" && <RAGTab data={results.rag} onManualPass={(id) => handleManualPass("rag", id)} onManualRevert={(id) => handleManualRevert("rag", id)} />}
+          {TABS[activeTab] === "Performance" && <PerformanceTab data={results.performance} />}
+          {TABS[activeTab] === "Load Test" && <LoadTab data={results.load} />}
+          {TABS[activeTab] === "LLMOps" && <LLMOpsTab data={tokenData} />}
+          {TABS[activeTab] === "Export" && (
             <div className="space-y-4">
               <p className="text-sm text-[var(--color-on-surface-variant)] opacity-70">Download the test results in various formats.</p>
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
@@ -680,10 +699,7 @@ ${rcaSection}`;
                 />
               </div>
             </div>
-                )}
-              </>
-            );
-          })()}
+          )}
         </div>
       </div>
 
@@ -1192,133 +1208,6 @@ function RAGTab({ data, onManualPass, onManualRevert }: { data: PhaseSummary; on
   );
 }
 
-// ─────────────────────── RCA Tab ──────────────────────────────────────────
-function RCATab({ data }: { data: RCAReport }) {
-  if (!data?.top_causes?.length) return <EmptyState />;
-
-  const CAT_COLORS: Record<string, { bg: string; text: string }> = {
-    C1: { bg: "bg-purple-100",  text: "text-purple-700"  },
-    C2: { bg: "bg-blue-100",    text: "text-blue-700"    },
-    C3: { bg: "bg-orange-100",  text: "text-orange-700"  },
-    C4: { bg: "bg-red-100",     text: "text-red-700"     },
-    C5: { bg: "bg-green-100",   text: "text-green-700"   },
-    C6: { bg: "bg-yellow-100",  text: "text-yellow-700"  },
-    C7: { bg: "bg-fuchsia-100", text: "text-fuchsia-700" },
-    C8: { bg: "bg-slate-100",   text: "text-slate-700"   },
-  };
-
-  const arch = data.architecture_summary as Record<string, unknown>;
-
-  return (
-    <div className="space-y-6">
-      {/* Summary stats */}
-      <SummaryRow4
-        items={[
-          { label: "Failures Mapped",    value: data.total_failed },
-          { label: "Results Analysed",   value: data.total_analyzed },
-          { label: "Relevant FP",        value: data.relevant_points },
-          { label: "Filtered Out",       value: data.filtered_points },
-        ]}
-      />
-
-      {/* Architecture profile */}
-      <div className="p-4 rounded-xl bg-[var(--color-surface-container-low)] space-y-2">
-        <p className="text-[10px] font-black uppercase tracking-widest text-[var(--color-on-surface-variant)] opacity-60">Architecture Profile Used</p>
-        <div className="flex flex-wrap gap-2">
-          {[
-            ["App Type",        arch.application_type as string],
-            ["Deployment",      arch.deployment_type as string],
-            ["Vector DB",       (arch.vector_db as string) || "none"],
-            ["Session DB",      (arch.session_db as string) || "none"],
-            ["Rate Limiting",   arch.has_rate_limiting ? "yes" : "no"],
-            ["Retry Logic",     arch.has_retry_logic ? "yes" : "no"],
-            ["Circuit Breaker", arch.has_circuit_breaker ? "yes" : "no"],
-          ].map(([label, val]) => {
-            const ok = !["no","none","unknown"].includes(String(val).toLowerCase());
-            return (
-              <span key={label} className={`text-[11px] font-semibold px-2.5 py-1 rounded-full ${ok ? "bg-secondary/10 text-secondary" : "bg-error/10 text-error"}`}>
-                {label}: {val}
-              </span>
-            );
-          })}
-        </div>
-      </div>
-
-      {/* Observed signals */}
-      {Object.keys(data.signal_summary).length > 0 && (
-        <div className="p-4 rounded-xl bg-[var(--color-surface-container-low)] space-y-2">
-          <p className="text-[10px] font-black uppercase tracking-widest text-[var(--color-on-surface-variant)] opacity-60">Observed Failure Signals</p>
-          <div className="flex flex-wrap gap-2">
-            {Object.entries(data.signal_summary)
-              .sort(([, a], [, b]) => b - a)
-              .map(([key, count]) => (
-                <span key={key} className="text-[11px] font-semibold px-2.5 py-1 rounded-full bg-[#855300]/10 text-[#855300]">
-                  {key.replace(/_/g, " ")} ({count})
-                </span>
-              ))}
-          </div>
-        </div>
-      )}
-
-      {/* Root cause cards */}
-      <div className="space-y-3">
-        <p className="text-[10px] font-black uppercase tracking-widest text-[var(--color-on-surface-variant)] opacity-60">Top Probable Root Causes</p>
-        {data.top_causes.map((cause) => {
-          const pct = Math.round(cause.probability * 100);
-          const isHigh   = pct >= 70;
-          const isMedium = pct >= 45 && pct < 70;
-          const probColor = isHigh ? "text-error" : isMedium ? "text-[#855300]" : "text-primary";
-          const probBg    = isHigh ? "bg-error/10" : isMedium ? "bg-[#855300]/10" : "bg-primary/10";
-          const probLabel = isHigh ? "HIGH" : isMedium ? "MEDIUM" : "LOW";
-          const cat = CAT_COLORS[cause.category_id] ?? { bg: "bg-slate-100", text: "text-slate-700" };
-
-          return (
-            <div key={cause.id} className="border border-[var(--color-outline-variant)] rounded-xl p-4">
-              <div className="flex items-start gap-3">
-                {/* Left: details */}
-                <div className="flex-1 min-w-0 space-y-2">
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <span className="text-xs font-black text-[var(--color-on-surface-variant)] opacity-50">#{cause.rank}</span>
-                    <span className={`text-[11px] font-bold px-2 py-0.5 rounded-full ${cat.bg} ${cat.text}`}>{cause.category}</span>
-                    <span className="text-[10px] font-mono text-[var(--color-on-surface-variant)] opacity-50">{cause.id}</span>
-                  </div>
-                  <p className="text-sm font-black text-[var(--color-on-surface)]">{cause.label}</p>
-
-                  {cause.evidence.slice(0, 3).map((e, i) => (
-                    <div key={i} className="flex items-start gap-1.5">
-                      <span className="material-symbols-outlined text-xs text-[#855300] mt-0.5 flex-shrink-0">arrow_right</span>
-                      <p className="text-xs text-[var(--color-on-surface-variant)]">{e}</p>
-                    </div>
-                  ))}
-
-                  {cause.reason && (
-                    <div className="p-2.5 rounded-lg bg-[var(--color-surface-container-low)] border-l-2 border-[var(--color-outline-variant)]">
-                      <p className="text-xs text-[var(--color-on-surface-variant)] leading-relaxed">{cause.reason}</p>
-                    </div>
-                  )}
-
-                  <div className="flex items-start gap-1.5 p-2 rounded-lg bg-secondary/5 border border-secondary/20">
-                    <span className="material-symbols-outlined text-xs text-secondary mt-0.5 flex-shrink-0">build</span>
-                    <p className="text-xs text-secondary font-medium">{cause.remediation}</p>
-                  </div>
-                </div>
-
-                {/* Right: probability */}
-                <div className={`flex-shrink-0 flex flex-col items-center gap-1 px-3 py-2 rounded-xl ${probBg}`}>
-                  <span className={`font-headline text-2xl font-black ${probColor}`}>{pct}%</span>
-                  <span className={`text-[9px] font-black tracking-widest ${probColor}`}>{probLabel}</span>
-                  <div className="w-12 h-1.5 bg-[var(--color-outline-variant)] rounded-full overflow-hidden">
-                    <div className={`h-full rounded-full ${isHigh ? "bg-error" : isMedium ? "bg-[#855300]" : "bg-primary"}`} style={{ width: `${pct}%` }} />
-                  </div>
-                </div>
-              </div>
-            </div>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
 
 // ─────────────────────── Performance Tab ──────────────────────────────────
 function PerformanceTab({ data }: { data: PerformanceMetrics }) {
@@ -1531,6 +1420,189 @@ function EmptyState() {
     <div className="py-12 text-center space-y-2">
       <span className="material-symbols-outlined text-3xl text-[var(--color-on-surface-variant)] opacity-30">data_usage</span>
       <p className="text-sm text-[var(--color-on-surface-variant)] opacity-50">No data available for this phase.</p>
+    </div>
+  );
+}
+
+// ─────────────────────── LLMOps Tab ────────────────────────────────────────
+const STAGE_LABELS: Record<string, string> = {
+  s0: "S0 Profile",
+  s1: "S1 Personas",
+  s2: "S2 Test Gen",
+  s3: "S3 Execution",
+  s4: "S4 Eval",
+  s5: "S5 Aggregate",
+  s7: "S7 Report",
+  s8: "S8 RCA",
+  unknown: "Other",
+};
+
+function LLMOpsTab({ data }: { data: TokenSummary | null }) {
+  const mlflowUrl = process.env.NEXT_PUBLIC_MLFLOW_URL;
+
+  if (!data || data.total_tokens === 0) {
+    return (
+      <div className="py-16 text-center space-y-3">
+        <span className="material-symbols-outlined text-4xl text-[var(--color-on-surface-variant)] opacity-30">monitoring</span>
+        <p className="text-sm font-semibold text-[var(--color-on-surface-variant)] opacity-60">No LLM usage data available</p>
+        <p className="text-xs text-[var(--color-on-surface-variant)] opacity-40">Set MLFLOW_TRACKING_URI on the backend to enable token tracking.</p>
+      </div>
+    );
+  }
+
+  const {
+    total_calls, total_prompt_tokens, total_completion_tokens, total_tokens,
+    avg_latency_ms, tpot_ms = 0, token_efficiency_ratio = 0, tpm_velocity = 0,
+    retry_count = 0, truncated_calls = 0, truncation_rate = 0,
+    models_used = {}, by_stage,
+  } = data;
+
+  const stageEntries = Object.entries(by_stage).sort((a, b) => b[1].total_tokens - a[1].total_tokens);
+  const maxStageTokens = stageEntries[0]?.[1].total_tokens || 1;
+  const promptPct = total_tokens > 0 ? Math.round((total_prompt_tokens / total_tokens) * 100) : 0;
+
+  const modelEntries = Object.entries(models_used).sort((a, b) => b[1] - a[1]);
+
+  return (
+    <div className="space-y-8">
+
+      {/* Row 1 — Token counts */}
+      <div>
+        <p className="text-xs font-bold uppercase tracking-widest text-[var(--color-on-surface-variant)] opacity-60 mb-3">Token Counts</p>
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+          {[
+            { label: "LLM Calls",        value: total_calls.toLocaleString(),                    color: "text-primary" },
+            { label: "Input Tokens",      value: total_prompt_tokens.toLocaleString(),            color: "text-[var(--color-on-surface)]" },
+            { label: "Output Tokens",     value: total_completion_tokens.toLocaleString(),        color: "text-[var(--color-on-surface)]" },
+            { label: "Total Tokens",      value: total_tokens.toLocaleString(),                   color: "text-secondary" },
+          ].map(c => (
+            <div key={c.label} className="p-4 rounded-xl bg-[var(--color-surface-container-low)] text-center">
+              <p className={`font-headline text-2xl font-black ${c.color}`}>{c.value}</p>
+              <p className="text-xs text-[var(--color-on-surface-variant)] opacity-60 mt-0.5">{c.label}</p>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Row 2 — Performance metrics */}
+      <div>
+        <p className="text-xs font-bold uppercase tracking-widest text-[var(--color-on-surface-variant)] opacity-60 mb-3">Performance</p>
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+          {[
+            { label: "Avg Call Latency",   value: avg_latency_ms > 0 ? `${avg_latency_ms.toFixed(0)}ms` : "—",   color: "text-[#855300]",
+              tip: "Average latency of METRON's internal LLM calls — not the target AI's response time" },
+            { label: "TPOT",              value: tpot_ms > 0 ? `${tpot_ms.toFixed(1)}ms/tok` : "—",            color: "text-[#855300]",
+              tip: "Time Per Output Token — total latency ÷ total output tokens" },
+            { label: "TPM Velocity",      value: tpm_velocity > 0 ? `${tpm_velocity.toFixed(0)}/min` : "—",    color: "text-primary",
+              tip: "Tokens processed per minute over the full pipeline run" },
+            { label: "Token Efficiency",  value: token_efficiency_ratio > 0 ? token_efficiency_ratio.toFixed(3) : "—", color: "text-secondary",
+              tip: "Output tokens ÷ Input tokens — higher = more output per prompt" },
+          ].map(c => (
+            <div key={c.label} className="p-4 rounded-xl bg-[var(--color-surface-container-low)] text-center" title={"tip" in c ? c.tip : undefined}>
+              <p className={`font-headline text-2xl font-black ${c.color}`}>{c.value}</p>
+              <p className="text-xs text-[var(--color-on-surface-variant)] opacity-60 mt-0.5">{c.label}</p>
+              {c.label === "Avg Call Latency" && (
+                <p className="text-[10px] text-[var(--color-on-surface-variant)] opacity-35 mt-0.5">METRON internal calls</p>
+              )}
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Row 3 — Reliability */}
+      <div>
+        <p className="text-xs font-bold uppercase tracking-widest text-[var(--color-on-surface-variant)] opacity-60 mb-3">Reliability</p>
+        <div className="grid grid-cols-2 gap-4">
+          <div className="p-4 rounded-xl bg-[var(--color-surface-container-low)] flex items-center gap-4">
+            <span className="material-symbols-outlined text-3xl text-[var(--color-on-surface-variant)] opacity-40">content_cut</span>
+            <div>
+              <p className="font-headline text-xl font-black text-[var(--color-on-surface)]">
+                {(truncation_rate * 100).toFixed(1)}%
+                <span className="text-sm font-normal opacity-60 ml-1">({truncated_calls} calls)</span>
+              </p>
+              <p className="text-xs text-[var(--color-on-surface-variant)] opacity-60">Truncation Rate</p>
+              <p className="text-[11px] text-[var(--color-on-surface-variant)] opacity-40 mt-0.5">Calls where max token limit was hit</p>
+            </div>
+          </div>
+          <div className="p-4 rounded-xl bg-[var(--color-surface-container-low)] flex items-center gap-4">
+            <span className="material-symbols-outlined text-3xl text-[var(--color-on-surface-variant)] opacity-40">replay</span>
+            <div>
+              <p className="font-headline text-xl font-black text-[var(--color-on-surface)]">{retry_count}</p>
+              <p className="text-xs text-[var(--color-on-surface-variant)] opacity-60">Retry Count</p>
+              <p className="text-[11px] text-[var(--color-on-surface-variant)] opacity-40 mt-0.5">Rate-limit backoffs + timeout retries</p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Row 4 — Token breakdown by stage */}
+      {stageEntries.length > 0 && (
+        <div className="space-y-3">
+          <p className="text-xs font-bold uppercase tracking-widest text-[var(--color-on-surface-variant)] opacity-60">Token Breakdown by Stage</p>
+          <div className="space-y-2">
+            {stageEntries.map(([stage, s]) => {
+              const barPct = Math.round((s.total_tokens / maxStageTokens) * 100);
+              return (
+                <div key={stage} className="flex items-center gap-3">
+                  <span className="text-xs font-mono w-24 shrink-0 text-[var(--color-on-surface-variant)]">
+                    {STAGE_LABELS[stage as keyof typeof STAGE_LABELS] ?? stage}
+                  </span>
+                  <div className="flex-1 h-5 rounded-full bg-[var(--color-surface-container-low)] overflow-hidden">
+                    <div className="h-full rounded-full bg-primary opacity-70 transition-all" style={{ width: `${barPct}%` }} />
+                  </div>
+                  <span className="text-xs text-[var(--color-on-surface-variant)] opacity-70 w-40 shrink-0 text-right">
+                    {s.calls} calls · {s.total_tokens.toLocaleString()} tokens
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* Row 5 — Input vs Output split */}
+      {(total_prompt_tokens > 0 || total_completion_tokens > 0) && (
+        <div className="space-y-2">
+          <p className="text-xs font-bold uppercase tracking-widest text-[var(--color-on-surface-variant)] opacity-60">Input vs Output Tokens</p>
+          <div className="h-5 rounded-full overflow-hidden flex">
+            <div className="h-full bg-primary opacity-70" style={{ width: `${promptPct}%` }} />
+            <div className="h-full bg-secondary opacity-50 flex-1" />
+          </div>
+          <div className="flex justify-between text-xs text-[var(--color-on-surface-variant)] opacity-60">
+            <span>Input: {total_prompt_tokens.toLocaleString()} ({promptPct}%)</span>
+            <span>Output: {total_completion_tokens.toLocaleString()} ({100 - promptPct}%)</span>
+          </div>
+        </div>
+      )}
+
+      {/* Row 6 — Models used */}
+      {modelEntries.length > 0 && (
+        <div className="space-y-3">
+          <p className="text-xs font-bold uppercase tracking-widest text-[var(--color-on-surface-variant)] opacity-60">Models Used</p>
+          <div className="flex flex-wrap gap-2">
+            {modelEntries.map(([model, calls]) => (
+              <span
+                key={model}
+                className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-mono bg-[var(--color-surface-container-low)] text-[var(--color-on-surface-variant)]"
+              >
+                <span className="w-1.5 h-1.5 rounded-full bg-primary opacity-70 shrink-0" />
+                {model}
+                <span className="opacity-50 ml-0.5">· {calls} calls</span>
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Footer */}
+      {mlflowUrl && (
+        <p className="text-xs text-[var(--color-on-surface-variant)] opacity-50 text-center">
+          Full per-call traces available in{" "}
+          <a href={mlflowUrl} target="_blank" rel="noopener noreferrer" className="underline hover:opacity-100">
+            MLflow UI ↗
+          </a>
+        </p>
+      )}
     </div>
   );
 }

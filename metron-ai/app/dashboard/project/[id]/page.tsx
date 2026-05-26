@@ -8,6 +8,8 @@ interface Run {
   run_id: string;
   timestamp: string;
   health_score: number | null;
+  total_passed: number | null;
+  total_tests: number | null;
   domain: string;
   application_type: string;
   status: string;
@@ -145,6 +147,8 @@ export default function ProjectLanding() {
           <div className="space-y-3">
             {runs.map((run, i) => {
               const score = run.health_score != null ? Math.round(run.health_score * 100) : null;
+              const hasPartialScore = run.total_passed != null && run.total_tests != null;
+              const isFullScore = score != null;
               const date = new Date(run.timestamp + "Z").toLocaleString();
               return (
                 <div
@@ -166,20 +170,26 @@ export default function ProjectLanding() {
                   <div className="flex items-center gap-8">
                     <div className="text-right">
                       <p className="text-[9px] font-black text-[var(--color-outline)] uppercase tracking-widest">
-                        Health Score
+                        {isFullScore ? "Health Score" : hasPartialScore ? "Tests Passed" : "Score"}
                       </p>
                       <p
                         className={`text-2xl font-black font-headline tracking-tighter ${
-                          score == null
-                            ? "text-[var(--color-outline)]"
-                            : score >= 75
-                            ? "text-[#006e2f]"
-                            : score >= 50
-                            ? "text-amber-600"
-                            : "text-red-600"
+                          isFullScore
+                            ? score! >= 75
+                              ? "text-[#006e2f]"
+                              : score! >= 50
+                              ? "text-amber-600"
+                              : "text-red-600"
+                            : hasPartialScore
+                            ? "text-primary"
+                            : "text-[var(--color-outline)]"
                         }`}
                       >
-                        {score != null ? `${score}%` : "---"}
+                        {isFullScore
+                          ? `${score}%`
+                          : hasPartialScore
+                          ? `${run.total_passed}/${run.total_tests}`
+                          : "—"}
                       </p>
                     </div>
                     <button
