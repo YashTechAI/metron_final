@@ -76,6 +76,15 @@ def init_db() -> None:
                     pass
             conn.execute("CREATE INDEX IF NOT EXISTS idx_runs_user ON runs(user_email)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_runs_tenant ON runs(tenant_id)")
+            # Migration: add total_passed and total_tests columns to existing databases
+            for col_sql in [
+                "ALTER TABLE runs ADD COLUMN total_passed INTEGER",
+                "ALTER TABLE runs ADD COLUMN total_tests  INTEGER",
+            ]:
+                try:
+                    conn.execute(col_sql)
+                except Exception:
+                    pass
             # Migration: add token_summary_json column to existing databases
             try:
                 conn.execute("ALTER TABLE runs ADD COLUMN token_summary_json TEXT")
@@ -153,6 +162,8 @@ def save_run(
     results: Dict[str, Any],
     status: str = "completed",
     user_email: str = "",
+    total_passed: Optional[int] = None,
+    total_tests: Optional[int] = None,
 ) -> None:
     """Persist a completed run to SQLite."""
     with _lock:
@@ -161,8 +172,8 @@ def save_run(
             conn.execute(
                 """
                 INSERT OR REPLACE INTO runs
-                    (run_id, project_id, user_email, timestamp, health_score, domain, application_type, status, results_json)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    (run_id, project_id, user_email, timestamp, health_score, domain, application_type, status, results_json, total_passed, total_tests)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     run_id,
@@ -174,6 +185,8 @@ def save_run(
                     application_type,
                     status,
                     json.dumps(results),
+                    total_passed,
+                    total_tests,
                 ),
             )
             conn.commit()
@@ -265,7 +278,7 @@ def get_runs_for_project(project_id: str, limit: int = 50) -> List[Dict[str, Any
             rows = conn.execute(
                 """
                 SELECT run_id, project_id, timestamp, health_score, domain,
-                       application_type, status
+                       application_type, status, total_passed, total_tests
                 FROM runs
                 WHERE project_id = ?
                 ORDER BY timestamp DESC

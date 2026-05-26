@@ -831,6 +831,8 @@ async def run_pipeline(
                 application_type=config.application_type.value,
                 results=final_json,
                 user_email=user_email,
+                total_passed=report.total_passed,
+                total_tests=report.total_tests,
             )
         except Exception as db_err:
             print(f"[Pipeline] DB save failed (non-fatal): {db_err}")
