@@ -826,7 +826,7 @@ async def run_pipeline(
             _db.save_run(
                 run_id=run_id,
                 project_id=project_id,
-                health_score=report.health_score if _is_full_run else None,
+                health_score=report.health_score,
                 domain=config.agent_domain,
                 application_type=config.application_type.value,
                 results=final_json,
@@ -842,7 +842,7 @@ async def run_pipeline(
                     user_email=user_email,
                     agent_name=config.agent_name,
                     domain=config.agent_domain,
-                    health_score=report.health_score if _is_full_run else None,
+                    health_score=report.health_score,
                     passed=report.passed,
                     total_tests=report.total_tests,
                     total_passed=report.total_passed,
