@@ -14,6 +14,7 @@ from typing import Any, Dict, List, Optional
 
 from core import db as _db
 import core.mlflow_run as _mlflow_run
+from core.notifications import notify_run_complete, notify_run_failed
 
 _mlflow_run.configure(
     tracking_uri=os.environ.get("MLFLOW_TRACKING_URI", ""),
@@ -830,10 +831,29 @@ async def run_pipeline(
                 application_type=config.application_type.value,
                 results=final_json,
                 user_email=user_email,
+                total_passed=report.total_passed,
+                total_tests=report.total_tests,
             )
         except Exception as db_err:
             print(f"[Pipeline] DB save failed (non-fatal): {db_err}")
 
+        # ── Email notification — run completed ────────────────────────────────
+        if getattr(config, "notify_email", False) and user_email:
+            try:
+                notify_run_complete(
+                    user_email=user_email,
+                    agent_name=config.agent_name,
+                    domain=config.agent_domain,
+                    health_score=report.health_score,
+                    passed=report.passed,
+                    total_tests=report.total_tests,
+                    total_passed=report.total_passed,
+                    run_id=run_id,
+                    report_html=report.report_html,
+                    is_full_run=_is_full_run,
+                )
+            except Exception as _notify_err:
+                print(f"[Pipeline] Email notification failed (non-fatal): {_notify_err}")
 
     except Exception as e:
         import traceback
@@ -847,5 +867,17 @@ async def run_pipeline(
             _db.mark_run_failed(run_id, str(e))
         except Exception as _db_fail_err:
             print(f"[Pipeline] mark_run_failed failed: {_db_fail_err}")
+
+        # ── Email notification — run failed ───────────────────────────────────
+        if getattr(config, "notify_email", False) and user_email:
+            try:
+                notify_run_failed(
+                    user_email=user_email,
+                    agent_name=config.agent_name,
+                    run_id=run_id,
+                    error_msg=str(e),
+                )
+            except Exception as _notify_err:
+                print(f"[Pipeline] Failure email notification failed (non-fatal): {_notify_err}")
     finally:
         _pipeline_sem.release()

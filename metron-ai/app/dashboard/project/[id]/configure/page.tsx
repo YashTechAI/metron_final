@@ -39,6 +39,7 @@ export default function ConfigurePage() {
   const [authToken, setAuthToken] = useState("");
   const [requestTemplate, setRequestTemplate] = useState("");
   const [responseTrimMarker, setResponseTrimMarker] = useState("");
+  const [notifyEmail, setNotifyEmail] = useState(false);
   const [connectionStatus, setConnectionStatus] = useState<"idle" | "testing" | "ok" | "fail">("idle");
   const [connectionMsg, setConnectionMsg] = useState("");
 
@@ -293,6 +294,7 @@ export default function ConfigurePage() {
       has_caching: hasCaching,
       has_dlq: hasDlq,
       additional_architecture_notes: archNotes,
+      notify_email: notifyEmail,
     };
 
     sessionStorage.setItem(`fullconfig_${projectId}`, JSON.stringify(fullConfig));
@@ -1150,6 +1152,20 @@ export default function ConfigurePage() {
 
       {/* ── Actions ────────────────────────────────────────── */}
       <div className="flex justify-end gap-4 pt-4">
+        {/* Email notification toggle */}
+        <label className="flex items-center gap-3 cursor-pointer select-none">
+          <div
+            onClick={() => setNotifyEmail(v => !v)}
+            className={`relative w-10 h-6 rounded-full transition-colors ${notifyEmail ? "bg-[var(--color-primary)]" : "bg-[var(--color-outline-variant)]"}`}
+          >
+            <span className={`absolute top-1 w-4 h-4 rounded-full bg-white shadow transition-transform ${notifyEmail ? "translate-x-5" : "translate-x-1"}`} />
+          </div>
+          <div>
+            <p className="text-xs font-bold text-[var(--color-on-surface)]">Email me when results are ready</p>
+            <p className="text-[10px] text-[var(--color-on-surface-variant)] opacity-60">HTML report will be attached</p>
+          </div>
+        </label>
+
         <button
           onClick={() => router.push("/dashboard")}
           className="px-6 py-3 rounded-xl border border-[var(--color-outline)] text-sm font-semibold hover:bg-[var(--color-surface-variant)] transition-colors"

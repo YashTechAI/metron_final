@@ -122,6 +122,7 @@ export default function PreviewPage() {
         attacks_per_category: cfg.attacks_per_category,
         deployment_type: cfg.deployment_type,
         additional_architecture_notes: cfg.additional_architecture_notes,
+        notify_email: cfg.notify_email ?? false,
       }));
 
       // Attach RAG knowledge base document if present
