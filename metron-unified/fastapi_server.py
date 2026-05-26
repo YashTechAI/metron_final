@@ -603,15 +603,18 @@ async def get_job_results(run_id: str, request: Request):
 async def get_token_summary(run_id: str, request: Request):
     user = get_current_user(request)
     job = jobs.get(run_id)
-    if not job:
-        raise HTTPException(404, "Job not found")
-    _check_job_ownership(job, user["email"])
-    return job.get("token_summary", {
-        "total_calls": 0,
-        "total_tokens": 0,
-        "estimated_cost_usd": 0.0,
-        "message": "Token data not yet available",
-    })
+
+    # Try in-memory first, then fall back to DB (survives server restarts)
+    if job:
+        _check_job_ownership(job, user["email"])
+        summary = job.get("token_summary")
+    else:
+        summary = _db.get_token_summary(run_id)
+
+    if summary and summary.get("total_tokens", 0) > 0:
+        return summary
+
+    return {"total_calls": 0, "total_tokens": 0, "estimated_cost_usd": 0.0}
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -823,14 +826,26 @@ class _AddUserBody(BaseModel):
     run_limit: int = 10
 
 
+_KNOWN_PHASES = {"functional", "security", "quality", "performance", "load"}
+
+def _validate_role(role: str) -> bool:
+    """Accept legacy named roles AND any '+'-joined combination of known phase names."""
+    legacy = {"functional_tester", "security_tester", "quality", "performance", "load",
+              "security+functional", "functional+quality", "performance+load", "all"}
+    if role in legacy:
+        return True
+    # Dynamic checkbox role: every part must be a known phase name
+    parts = {p.strip() for p in role.split("+")}
+    return bool(parts) and parts.issubset(_KNOWN_PHASES)
+
+
 @app.post("/api/admin/users")
 async def admin_add_user(body: _AddUserBody, request: Request):
     from core.cognito_admin import invite_user
     user = get_current_user(request)
     _require_tenant_admin(user)
-    valid_roles = {"functional_tester", "security_tester", "quality", "performance", "load", "security+functional", "functional+quality", "performance+load", "all"}
-    if body.role not in valid_roles:
-        raise HTTPException(400, f"Invalid role. Must be one of: {sorted(valid_roles)}")
+    if not _validate_role(body.role):
+        raise HTTPException(400, "Invalid role. Use phase names (functional, security, quality, performance, load) joined by '+'.")
     _db.add_user_to_tenant(body.user_email, user["tenant_id"], body.role, body.run_limit)
     result = invite_user(body.user_email)
     if not result["ok"]:
@@ -851,9 +866,8 @@ async def admin_update_user(email: str, body: _UpdateUserBody, request: Request)
         if not _db.update_user_limit(email, body.run_limit, user["tenant_id"]):
             raise HTTPException(404, "User not found in your tenant")
     if body.role is not None:
-        valid_roles = {"functional_tester", "security_tester", "quality", "performance", "load", "security+functional", "functional+quality", "performance+load", "all"}
-        if body.role not in valid_roles:
-            raise HTTPException(400, f"Invalid role. Must be one of: {sorted(valid_roles)}")
+        if not _validate_role(body.role):
+            raise HTTPException(400, "Invalid role. Use phase names (functional, security, quality, performance, load) joined by '+'.")
         if not _db.update_user_role(email, body.role, user["tenant_id"]):
             raise HTTPException(404, "User not found in your tenant")
     return {"ok": True}

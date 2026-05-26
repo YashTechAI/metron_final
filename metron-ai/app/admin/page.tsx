@@ -20,16 +20,90 @@ interface TenantStats {
   admin_email: string;
 }
 
-const ROLES = ["functional_tester", "security_tester", "quality", "performance", "load", "security+functional", "functional+quality", "performance+load", "all"];
+// ── Phase helpers ─────────────────────────────────────────────────────────────
+const PHASES = [
+  { key: "functional",  label: "Functional",  color: "bg-secondary/10 text-secondary" },
+  { key: "security",    label: "Security",    color: "bg-error/10 text-error" },
+  { key: "quality",     label: "Quality",     color: "bg-primary/10 text-primary" },
+  { key: "performance", label: "Performance", color: "bg-[#855300]/10 text-[#855300]" },
+  { key: "load",        label: "Load",        color: "bg-[var(--color-surface-container)] text-[var(--color-on-surface-variant)]" },
+];
+const KNOWN_PHASES = new Set(PHASES.map(p => p.key));
+
+function parseRole(role: string): Set<string> {
+  const legacy: Record<string, string[]> = {
+    "functional_tester":   ["functional"],
+    "security_tester":     ["security"],
+    "quality":             ["quality"],
+    "performance":         ["performance"],
+    "load":                ["load"],
+    "security+functional": ["security", "functional"],
+    "functional+quality":  ["functional", "quality"],
+    "performance+load":    ["performance", "load"],
+    "all":                 ["functional", "security", "quality", "performance", "load"],
+    "tenant_admin":        ["functional", "security", "quality", "performance", "load"],
+    "super_admin":         ["functional", "security", "quality", "performance", "load"],
+  };
+  if (legacy[role]) return new Set(legacy[role]);
+  const parts = role.split("+").filter(p => KNOWN_PHASES.has(p));
+  return parts.length > 0 ? new Set(parts) : new Set(KNOWN_PHASES);
+}
+
+function buildRole(phases: Set<string>): string {
+  const order = ["functional", "security", "quality", "performance", "load"];
+  const active = order.filter(p => phases.has(p));
+  if (active.length === order.length) return "all";
+  return active.join("+");
+}
+
+function roleLabel(role: string): string {
+  const phases = parseRole(role);
+  if (phases.size === PHASES.length) return "All Tests";
+  return PHASES.filter(p => phases.has(p.key)).map(p => p.label).join(" + ");
+}
+
+// ── Phase checkbox picker component ──────────────────────────────────────────
+function PhasePicker({ value, onChange }: { value: string; onChange: (role: string) => void }) {
+  const checked = parseRole(value);
+  const toggle = (key: string) => {
+    const next = new Set(checked);
+    next.has(key) ? next.delete(key) : next.add(key);
+    if (next.size === 0) return; // must keep at least one
+    onChange(buildRole(next));
+  };
+  return (
+    <div className="flex flex-wrap gap-2">
+      {PHASES.map(p => (
+        <button
+          key={p.key}
+          type="button"
+          onClick={() => toggle(p.key)}
+          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold border-2 transition-all ${
+            checked.has(p.key)
+              ? `${p.color} border-current`
+              : "bg-[var(--color-surface-container-low)] text-[var(--color-on-surface-variant)] opacity-40 border-transparent hover:opacity-70"
+          }`}
+        >
+          <span className={`w-3.5 h-3.5 rounded flex items-center justify-center border ${
+            checked.has(p.key) ? "bg-current border-current" : "border-[var(--color-outline)]"
+          }`}>
+            {checked.has(p.key) && (
+              <svg viewBox="0 0 10 8" className="w-2.5 h-2 fill-white"><path d="M1 4l3 3 5-6"/></svg>
+            )}
+          </span>
+          {p.label}
+        </button>
+      ))}
+    </div>
+  );
+}
 
 function roleColor(role: string) {
-  return role === "tenant_admin"
-    ? "bg-primary/10 text-primary"
-    : role === "security_tester"
-    ? "bg-error/10 text-error"
-    : role === "functional_tester"
-    ? "bg-secondary/10 text-secondary"
-    : "bg-[var(--color-surface-container)]/60 text-[var(--color-on-surface-variant)]";
+  const phases = parseRole(role);
+  if (phases.has("security") && phases.size === 1) return "bg-error/10 text-error";
+  if (phases.has("functional") && phases.size === 1) return "bg-secondary/10 text-secondary";
+  if (phases.size === PHASES.length) return "bg-primary/10 text-primary";
+  return "bg-[var(--color-surface-container)] text-[var(--color-on-surface-variant)]";
 }
 
 export default function AdminPage() {
@@ -39,8 +113,9 @@ export default function AdminPage() {
 
   const [showAdd, setShowAdd] = useState(false);
   const [newEmail, setNewEmail] = useState("");
-  const [newRole, setNewRole] = useState("viewer");
+  const [newRole, setNewRole] = useState("functional+security");
   const [newLimit, setNewLimit] = useState(10);
+  const [expandedUser, setExpandedUser] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [saveMsg, setSaveMsg] = useState("");
 
@@ -176,28 +251,30 @@ export default function AdminPage() {
         </div>
 
         {showAdd && (
-          <div className="p-5 border-b border-[var(--color-outline-variant)]/20 bg-[var(--color-surface-container-low)] space-y-3">
+          <div className="p-5 border-b border-[var(--color-outline-variant)]/20 bg-[var(--color-surface-container-low)] space-y-4">
             <p className="text-xs font-black uppercase tracking-wider text-primary">Invite New Member</p>
             <p className="text-[11px] text-[var(--color-on-surface-variant)] opacity-60">
-              They'll receive an email with a temporary password to set up their account.
+              They&apos;ll receive an email with a temporary password to set up their account.
             </p>
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
               <input value={newEmail} onChange={e => setNewEmail(e.target.value)}
                 placeholder="user@company.com" type="email"
                 className="px-3 py-2.5 rounded-xl border border-[var(--color-outline-variant)] text-sm bg-white" />
-              <select value={newRole} onChange={e => setNewRole(e.target.value)}
-                className="px-3 py-2.5 rounded-xl border border-[var(--color-outline-variant)] text-sm bg-white">
-                {ROLES.map(r => <option key={r} value={r}>{r.replace(/_/g, " ")}</option>)}
-              </select>
               <div className="flex items-center gap-2">
                 <input value={newLimit} onChange={e => setNewLimit(Number(e.target.value))}
                   type="number" min={0} placeholder="Run limit"
-                  className="flex-1 px-3 py-2.5 rounded-xl border border-[var(--color-outline-variant)] text-sm bg-white" />
+                  className="w-32 px-3 py-2.5 rounded-xl border border-[var(--color-outline-variant)] text-sm bg-white" />
                 <button onClick={addUser} disabled={saving}
-                  className="px-4 py-2.5 rounded-xl btn-primary text-xs font-bold whitespace-nowrap disabled:opacity-50">
+                  className="flex-1 px-4 py-2.5 rounded-xl btn-primary text-xs font-bold whitespace-nowrap disabled:opacity-50">
                   {saving ? "Inviting…" : "Send Invite"}
                 </button>
               </div>
+            </div>
+            <div className="space-y-1.5">
+              <p className="text-[10px] font-black uppercase tracking-widest text-[var(--color-on-surface-variant)] opacity-60">
+                Test Access — select which phases this user can run
+              </p>
+              <PhasePicker value={newRole} onChange={setNewRole} />
             </div>
           </div>
         )}
@@ -210,35 +287,63 @@ export default function AdminPage() {
             </div>
           ) : teamMembers.map(u => {
             const userPct = u.run_limit > 0 ? Math.round((u.runs_used / u.run_limit) * 100) : 0;
+            const isExpanded = expandedUser === u.user_email;
             return (
-              <div key={u.user_email} className="p-4 flex items-center gap-4 flex-wrap">
-                <div className="flex items-center gap-3 flex-1 min-w-0">
-                  <div className="w-9 h-9 rounded-full bg-gradient-to-br from-[#00668a] to-[#38bdf8] flex items-center justify-center text-white text-xs font-black flex-shrink-0">
-                    {u.user_email[0].toUpperCase()}
+              <div key={u.user_email} className="border-b border-[var(--color-outline-variant)]/10 last:border-0">
+                <div className="p-4 flex items-center gap-4 flex-wrap">
+                  {/* Avatar + email */}
+                  <div className="flex items-center gap-3 flex-1 min-w-0">
+                    <div className="w-9 h-9 rounded-full bg-gradient-to-br from-[#00668a] to-[#38bdf8] flex items-center justify-center text-white text-xs font-black flex-shrink-0">
+                      {u.user_email[0].toUpperCase()}
+                    </div>
+                    <div className="min-w-0">
+                      <p className="text-sm font-bold truncate">{u.user_email}</p>
+                      <p className="text-[10px] text-[var(--color-on-surface-variant)] opacity-60">
+                        {u.runs_used}/{u.run_limit > 0 ? u.run_limit : "∞"} runs used
+                        {u.run_limit > 0 && ` (${userPct}%)`}
+                      </p>
+                    </div>
                   </div>
-                  <div className="min-w-0">
-                    <p className="text-sm font-bold truncate">{u.user_email}</p>
-                    <p className="text-[10px] text-[var(--color-on-surface-variant)] opacity-60">
-                      {u.runs_used}/{u.run_limit > 0 ? u.run_limit : "∞"} runs used
-                      {u.run_limit > 0 && ` (${userPct}%)`}
+
+                  {/* Current permissions badge — click to expand picker */}
+                  <button
+                    onClick={() => setExpandedUser(isExpanded ? null : u.user_email)}
+                    className={`flex items-center gap-1.5 text-[11px] font-bold px-2.5 py-1 rounded-full transition-all ${roleColor(u.role)} hover:opacity-80`}
+                  >
+                    <span className="material-symbols-outlined text-xs">tune</span>
+                    {roleLabel(u.role)}
+                  </button>
+
+                  {/* Run limit */}
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-[10px] text-[var(--color-on-surface-variant)] opacity-60">Limit:</span>
+                    <input defaultValue={u.run_limit} type="number" min={0}
+                      onBlur={e => updateUser(u.user_email, "run_limit", Number(e.target.value))}
+                      className="w-16 text-xs text-center px-2 py-1 rounded-lg border border-[var(--color-outline-variant)] bg-white" />
+                  </div>
+
+                  {/* Remove */}
+                  <button onClick={() => removeUser(u.user_email)}
+                    className="w-8 h-8 rounded-lg flex items-center justify-center text-[var(--color-outline)] hover:text-error hover:bg-error/10 transition-all">
+                    <span className="material-symbols-outlined text-base">person_remove</span>
+                  </button>
+                </div>
+
+                {/* Inline phase picker — expands when badge is clicked */}
+                {isExpanded && (
+                  <div className="px-5 pb-4 pt-1 bg-[var(--color-surface-container-low)] space-y-2">
+                    <p className="text-[10px] font-black uppercase tracking-widest text-[var(--color-on-surface-variant)] opacity-60">
+                      Edit test access for {u.user_email}
                     </p>
+                    <PhasePicker
+                      value={u.role}
+                      onChange={role => {
+                        updateUser(u.user_email, "role", role);
+                        setExpandedUser(null);
+                      }}
+                    />
                   </div>
-                </div>
-                <select defaultValue={u.role}
-                  onChange={e => updateUser(u.user_email, "role", e.target.value)}
-                  className={`text-[11px] font-bold px-2 py-1 rounded-full border-0 cursor-pointer ${roleColor(u.role)}`}>
-                  {ROLES.map(r => <option key={r} value={r}>{r.replace(/_/g, " ")}</option>)}
-                </select>
-                <div className="flex items-center gap-1.5">
-                  <span className="text-[10px] text-[var(--color-on-surface-variant)] opacity-60">Limit:</span>
-                  <input defaultValue={u.run_limit} type="number" min={0}
-                    onBlur={e => updateUser(u.user_email, "run_limit", Number(e.target.value))}
-                    className="w-16 text-xs text-center px-2 py-1 rounded-lg border border-[var(--color-outline-variant)] bg-white" />
-                </div>
-                <button onClick={() => removeUser(u.user_email)}
-                  className="w-8 h-8 rounded-lg flex items-center justify-center text-[var(--color-outline)] hover:text-error hover:bg-error/10 transition-all">
-                  <span className="material-symbols-outlined text-base">person_remove</span>
-                </button>
+                )}
               </div>
             );
           })}

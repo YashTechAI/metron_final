@@ -68,6 +68,9 @@ from stages.s8_rca.prompt_classifier import classify_prompt_failures
 
 _MAX_LOG_EVENTS = 300   # sliding window — keeps feed responsive with 100+ personas
 
+# Known pipeline phases
+_ALL_PHASES = {"functional", "security", "quality", "performance", "load"}
+
 # Maps user role → set of pipeline phases that role is allowed to execute.
 # Phases not in the set are skipped entirely.
 _ROLE_PHASES: Dict[str, set] = {
@@ -79,13 +82,21 @@ _ROLE_PHASES: Dict[str, set] = {
     "security+functional": {"security", "functional"},
     "functional+quality":  {"functional", "quality"},
     "performance+load":    {"performance", "load"},
-    "all":                 {"functional", "security", "quality", "performance", "load"},
-    "tenant_admin":        {"functional", "security", "quality", "performance", "load"},
-    "super_admin":         {"functional", "security", "quality", "performance", "load"},
+    "all":                 _ALL_PHASES,
+    "tenant_admin":        _ALL_PHASES,
+    "super_admin":         _ALL_PHASES,
 }
 
 def _allowed_phases(user_role: str) -> set:
-    return _ROLE_PHASES.get(user_role, {"functional", "security", "quality", "performance", "load"})
+    """Resolve a role string to the set of allowed phases.
+    Handles legacy named roles AND dynamic checkbox-built roles like
+    'functional+security+load' — any '+'-joined combination of phase names.
+    """
+    if user_role in _ROLE_PHASES:
+        return _ROLE_PHASES[user_role]
+    # Dynamic: split by '+' and keep only known phase names
+    parts = {p.strip() for p in user_role.split("+")} & _ALL_PHASES
+    return parts if parts else _ALL_PHASES
 
 def _log(job_store: Dict, run_id: str, event_type: str, content: Dict):
     """Append a rich log event to the job's event stream for the live feed UI."""

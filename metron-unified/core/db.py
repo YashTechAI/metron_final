@@ -246,6 +246,22 @@ def save_token_summary(run_id: str, token_summary: Dict[str, Any]) -> None:
             conn.close()
 
 
+def get_token_summary(run_id: str) -> Optional[Dict[str, Any]]:
+    """Load the LLMOps token summary for a run from DB. Returns None if not found."""
+    with _lock:
+        conn = _connect()
+        try:
+            row = conn.execute(
+                "SELECT token_summary_json FROM runs WHERE run_id=?",
+                (run_id,),
+            ).fetchone()
+            if row and row["token_summary_json"]:
+                return json.loads(row["token_summary_json"])
+            return None
+        finally:
+            conn.close()
+
+
 def get_run(run_id: str) -> Optional[Dict[str, Any]]:
     """Fetch a single run by run_id. Returns None if not found."""
     with _lock:

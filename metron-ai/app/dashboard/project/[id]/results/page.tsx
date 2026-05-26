@@ -550,7 +550,8 @@ ${loadSection}`;
   const healthColor = healthPct >= 70 ? "text-secondary" : healthPct >= 40 ? "text-[#855300]" : "text-error";
   const isFullRun = ["all", "tenant_admin", "super_admin"].includes(results.user_role ?? "all");
 
-  const ROLE_PHASES: Record<string, Set<string>> = {
+  const _KNOWN_PHASES = new Set(["functional", "security", "quality", "performance", "load"]);
+  const _ROLE_PHASES: Record<string, Set<string>> = {
     "functional_tester":   new Set(["functional"]),
     "security_tester":     new Set(["security"]),
     "quality":             new Set(["quality"]),
@@ -559,11 +560,17 @@ ${loadSection}`;
     "security+functional": new Set(["security", "functional"]),
     "functional+quality":  new Set(["functional", "quality"]),
     "performance+load":    new Set(["performance", "load"]),
-    "all":                 new Set(["functional", "security", "quality", "performance", "load"]),
-    "tenant_admin":        new Set(["functional", "security", "quality", "performance", "load"]),
-    "super_admin":         new Set(["functional", "security", "quality", "performance", "load"]),
+    "all":                 _KNOWN_PHASES,
+    "tenant_admin":        _KNOWN_PHASES,
+    "super_admin":         _KNOWN_PHASES,
   };
-  const activePhases = ROLE_PHASES[results.user_role ?? "all"] ?? new Set(["functional", "security", "quality", "performance", "load"]);
+  const _resolvePhases = (role: string): Set<string> => {
+    if (_ROLE_PHASES[role]) return _ROLE_PHASES[role];
+    // Dynamic: "functional+security+load" → parse each part
+    const parts = new Set(role.split("+").filter(p => _KNOWN_PHASES.has(p)));
+    return parts.size > 0 ? parts : _KNOWN_PHASES;
+  };
+  const activePhases = _resolvePhases(results.user_role ?? "all");
 
   const TABS = [
     ...(activePhases.has("functional") ? ["Functional"] : []),
