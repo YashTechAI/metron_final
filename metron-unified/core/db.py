@@ -764,7 +764,8 @@ def get_tenant_runs(tenant_id: str) -> List[Dict[str, Any]]:
             rows = conn.execute(
                 """
                 SELECT r.run_id, r.user_email, r.project_id, r.timestamp,
-                       r.health_score, r.domain, r.application_type, r.status
+                       r.health_score, r.total_passed, r.total_tests,
+                       r.domain, r.application_type, r.status
                 FROM runs r
                 JOIN users u ON r.user_email = u.user_email
                 WHERE u.tenant_id = ?
