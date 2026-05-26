@@ -31,6 +31,18 @@ const METRIC_LABELS: Record<string, string> = {
   bias_fairness:                "Bias & Fairness",
   toxic_request:                "Toxic Request",
   attack_resistance:            "Attack Resistance",
+  // Security — Garak adversarial probes
+  garak_dan:                    "DAN 11.0 Jailbreak (Garak)",
+  garak_antidan:                "AntiDAN Bypass (Garak)",
+  garak_dan_wild:               "DAN In The Wild (Garak)",
+  garak_dan_ablation:           "DAN Ablation Variants (Garak)",
+  garak_autodan:                "AutoDAN Attack (Garak)",
+  garak_encoding_base64:        "Base64 Injection (Garak)",
+  garak_encoding_rot13:         "ROT13 Injection (Garak)",
+  garak_encoding_hex:           "Hex Injection (Garak)",
+  garak_encoding_leet:          "Leetspeak Injection (Garak)",
+  garak_encoding_morse:         "Morse Code Injection (Garak)",
+  garak_encoding_zalgo:         "Zalgo Injection (Garak)",
   // Quality
   geval_overall:                "GEval Overall",
   ragas_faithfulness:           "Faithfulness (RAGAS)",
@@ -56,7 +68,12 @@ function metricLabel(name: string): string {
 
 // Security metrics: detection = pass means no issue found; resistance = pass means attack was blocked
 function isDetectionMetric(name: string) { return ["pii_leakage", "toxicity", "bias_fairness"].includes(name); }
-function isResistanceMetric(name: string) { return ["prompt_injection", "attack_resistance", "toxic_request"].includes(name); }
+function isResistanceMetric(name: string) {
+  return ["prompt_injection", "attack_resistance", "toxic_request",
+          "garak_dan", "garak_antidan", "garak_dan_wild", "garak_dan_ablation", "garak_autodan",
+          "garak_encoding_base64", "garak_encoding_rot13", "garak_encoding_hex",
+          "garak_encoding_leet", "garak_encoding_morse", "garak_encoding_zalgo"].includes(name);
+}
 
 // ─────────────────────────────────── Types ────────────────────────────────────
 interface TestResult {
@@ -1473,13 +1490,13 @@ function ConversationBlock({
 }: { input: string; output: string; inputLabel?: string; outputLabel?: string }) {
   return (
     <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-      <div className="p-3 rounded-lg bg-[var(--color-surface-container-low)]">
-        <p className="text-[10px] font-bold uppercase tracking-wider text-[var(--color-on-surface-variant)] opacity-60 mb-1">{inputLabel}</p>
-        <p className="text-xs font-mono break-all">{input || "—"}</p>
+      <div className="p-3 rounded-lg bg-[var(--color-surface-container-low)] flex flex-col">
+        <p className="text-[10px] font-bold uppercase tracking-wider text-[var(--color-on-surface-variant)] opacity-60 mb-1 flex-shrink-0">{inputLabel}</p>
+        <div className="overflow-y-auto max-h-64 text-xs font-mono whitespace-pre-wrap break-words">{input || "—"}</div>
       </div>
-      <div className="p-3 rounded-lg bg-[var(--color-surface-container-low)]">
-        <p className="text-[10px] font-bold uppercase tracking-wider text-[var(--color-on-surface-variant)] opacity-60 mb-1">{outputLabel}</p>
-        <p className="text-xs break-all">{output || "—"}</p>
+      <div className="p-3 rounded-lg bg-[var(--color-surface-container-low)] flex flex-col">
+        <p className="text-[10px] font-bold uppercase tracking-wider text-[var(--color-on-surface-variant)] opacity-60 mb-1 flex-shrink-0">{outputLabel}</p>
+        <div className="overflow-y-auto max-h-64 text-xs whitespace-pre-wrap break-words">{output || "—"}</div>
       </div>
     </div>
   );
