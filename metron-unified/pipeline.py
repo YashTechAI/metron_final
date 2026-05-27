@@ -334,13 +334,13 @@ async def run_pipeline(
         func_results, sec_results, qual_results = await _run_evals_with_progress()
 
         # ── Garak adversarial probes ───────────────────────────────────────────
-        # Runs after the main eval gather so progress stays at ~73-74.
+        # Always runs — 17 curated probes concurrently after main eval.
         # Results use superset="security" and merge into sec_results.
         garak_results: List[MetricResult] = []
-        _update(job_store, run_id, 73, "Running Garak adversarial probes (DAN, encoding)…", "security")
+        _update(job_store, run_id, 73, "Running Garak adversarial probes (17 curated probes)…", "security")
         _log(job_store, run_id, "phase_start", {"phase": "garak", "label": "Garak Adversarial Probes"})
         try:
-            garak_results = await evaluate_garak(config)
+            garak_results = await evaluate_garak(config, llm_client)
             vuln_count = sum(1 for r in garak_results if not r.skipped and r.vulnerability_found)
             _log(job_store, run_id, "garak_complete", {
                 "probes":          len(garak_results),
