@@ -834,6 +834,26 @@ export default function ConfigurePage() {
           ))}
         </div>
         <SliderField label="Attack Prompts per Category" min={1} max={50} value={attacksPerCategory} onChange={setAttacksPerCategory} />
+
+        {/* ── Garak Adversarial Probes ──────────────────────────────── */}
+        <div className="pt-4 border-t border-[var(--color-outline-variant)]">
+          <div className="flex items-center gap-2 mb-2">
+            <span className="material-symbols-outlined text-base text-secondary">bug_report</span>
+            <p className="text-sm font-bold text-[var(--color-on-surface)]">Garak Adversarial Probes</p>
+            <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-secondary/10 text-secondary font-bold uppercase tracking-wider">NVIDIA</span>
+          </div>
+          <div className="flex items-center gap-3 p-3 rounded-xl bg-secondary/5 border border-secondary/20">
+            <span className="material-symbols-outlined text-secondary text-xl shrink-0">verified_user</span>
+            <div>
+              <p className="text-xs font-semibold text-[var(--color-on-surface)]">Always runs automatically</p>
+              <p className="text-[10px] text-[var(--color-on-surface-variant)] opacity-70 mt-0.5">
+                17 curated probes — DAN 11.0, STAN, AIM, Developer Mode, Fictional Framing, Grandma Exploit,
+                Instruction Override, System Prompt Extraction, Many-Shot, Base64, ROT13, Hex, Leet, Morse, Zalgo &amp; more.
+                All probes run concurrently.
+              </p>
+            </div>
+          </div>
+        </div>
       </Section>
 
       {/* ── Quality Metrics ────────────────────────────────── */}

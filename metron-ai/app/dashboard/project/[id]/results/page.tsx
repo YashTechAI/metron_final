@@ -31,6 +31,24 @@ const METRIC_LABELS: Record<string, string> = {
   bias_fairness:                "Bias & Fairness",
   toxic_request:                "Toxic Request",
   attack_resistance:            "Attack Resistance",
+  // Security — Garak adversarial probes (17 curated probes)
+  garak_dan:                        "DAN 11.0 Jailbreak",
+  garak_antidan:                    "AntiDAN Bypass",
+  garak_dan_wild:                   "DAN In The Wild",
+  garak_dan_ablation:               "DAN Ablation Variants",
+  garak_autodan:                    "AutoDAN Adversarial",
+  garak_stan:                       "STAN (Strive To Avoid Norms)",
+  garak_fictional_framing:          "Fictional Framing Attack",
+  garak_grandma:                    "Grandma Exploit",
+  garak_system_prompt_extract:      "System Prompt Extraction",
+  garak_instruction_override:       "Instruction Override",
+  garak_many_shot:                  "Many-Shot Jailbreak",
+  garak_encoding_base64:            "Base64 Encoding Injection",
+  garak_encoding_rot13:             "ROT13 Encoding Injection",
+  garak_encoding_hex:               "Hex Encoding Injection",
+  garak_encoding_leet:              "Leetspeak Injection",
+  garak_encoding_morse:             "Morse Code Injection",
+  garak_encoding_zalgo:             "Zalgo Unicode Injection",
   // Quality
   geval_overall:                "GEval Overall",
   ragas_faithfulness:           "Faithfulness (RAGAS)",
@@ -56,7 +74,11 @@ function metricLabel(name: string): string {
 
 // Security metrics: detection = pass means no issue found; resistance = pass means attack was blocked
 function isDetectionMetric(name: string) { return ["pii_leakage", "toxicity", "bias_fairness"].includes(name); }
-function isResistanceMetric(name: string) { return ["prompt_injection", "attack_resistance", "toxic_request"].includes(name); }
+function isResistanceMetric(name: string) {
+  // All garak_* metrics are resistance tests (higher score = more attacks blocked)
+  if (name.startsWith("garak_")) return true;
+  return ["prompt_injection", "attack_resistance", "toxic_request"].includes(name);
+}
 
 // ─────────────────────────────────── Types ────────────────────────────────────
 interface TestResult {
@@ -844,18 +866,33 @@ function FunctionalTab({
 // ─────────────────────── Security Tab ─────────────────────────────────────
 function SecurityTab({ data, onManualPass, onManualRevert }: { data: PhaseSummary; onManualPass?: (id: string) => void; onManualRevert?: (id: string) => void }) {
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const [garakExpanded, setGarakExpanded] = useState(false);
+  const [garakProbeExpanded, setGarakProbeExpanded] = useState<Set<string>>(new Set());
   if (!data?.results) return <EmptyState />;
 
   const secScore = data.pass_rate;
   const scoreColor = secScore >= 90 ? "text-secondary" : secScore >= 70 ? "text-[#855300]" : "text-error";
   const toggle = (id: string) => setExpanded((prev) => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  const toggleGarakProbe = (id: string) => setGarakProbeExpanded((prev) => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
 
-  // Group by full metric name (category field now holds the full metric_name)
+  // Split garak vs non-garak results
+  const garakResults = data.results.filter((r) => (r.category || "").startsWith("garak_"));
+  const nonGarakResults = data.results.filter((r) => !(r.category || "").startsWith("garak_"));
+
+  // Group non-garak by category
   const byCategory: Record<string, TestResult[]> = {};
-  for (const r of data.results) {
+  for (const r of nonGarakResults) {
     const cat = r.category || "general";
     if (!byCategory[cat]) byCategory[cat] = [];
     byCategory[cat].push(r);
+  }
+
+  // Group garak by probe (category = metric_name e.g. "garak_dan")
+  const garakByProbe: Record<string, TestResult[]> = {};
+  for (const r of garakResults) {
+    const cat = r.category || "garak_unknown";
+    if (!garakByProbe[cat]) garakByProbe[cat] = [];
+    garakByProbe[cat].push(r);
   }
 
   // Ordered display: detection metrics first, then resistance metrics
@@ -864,6 +901,13 @@ function SecurityTab({ data, onManualPass, onManualRevert }: { data: PhaseSummar
     const ai = ORDER.indexOf(a); const bi = ORDER.indexOf(b);
     return (ai === -1 ? 99 : ai) - (bi === -1 ? 99 : bi);
   });
+
+  // Garak summary stats — probe-level (a probe "passes" only if every prompt was resisted)
+  const garakProbeCount  = Object.keys(garakByProbe).length;
+  const garakPassed      = Object.values(garakByProbe).filter(
+    (hits) => hits.every((r) => r.passed),
+  ).length;
+  const garakVulns       = garakProbeCount - garakPassed;
 
   return (
     <div className="space-y-6">
@@ -890,6 +934,7 @@ function SecurityTab({ data, onManualPass, onManualRevert }: { data: PhaseSummar
         </div>
       )}
 
+      {/* ── Standard security checks ── */}
       {sortedEntries.map(([cat, results]) => {
         const passed = results.filter((r) => r.passed).length;
         const passLabel = isDetectionMetric(cat)
@@ -974,6 +1019,92 @@ function SecurityTab({ data, onManualPass, onManualRevert }: { data: PhaseSummar
           </div>
         );
       })}
+
+      {/* ── Garak Adversarial Probes parent accordion ── */}
+      {garakProbeCount > 0 && (
+        <div className="border-2 border-secondary/30 rounded-xl overflow-hidden">
+          <button
+            onClick={() => setGarakExpanded((v) => !v)}
+            className="w-full flex items-center justify-between p-4 hover:bg-secondary/5 transition-colors"
+          >
+            <div className="flex items-center gap-3">
+              <span className={`material-symbols-outlined text-base ${garakVulns === 0 ? "text-secondary" : "text-error"}`}>
+                {garakVulns === 0 ? "verified_user" : "gpp_bad"}
+              </span>
+              <p className="text-sm font-black">Garak Adversarial Probes</p>
+              <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-secondary/10 text-secondary font-bold uppercase tracking-wider">NVIDIA</span>
+            </div>
+            <div className="flex items-center gap-3">
+              <span className={`text-xs font-bold px-2 py-0.5 rounded-full ${garakVulns === 0 ? "badge-pass" : "badge-fail"}`}>
+                {garakPassed}/{garakProbeCount} probes blocked
+              </span>
+              <span className="material-symbols-outlined text-base text-[var(--color-on-surface-variant)]">
+                {garakExpanded ? "expand_less" : "expand_more"}
+              </span>
+            </div>
+          </button>
+          {garakExpanded && (
+            <div className="divide-y divide-secondary/10">
+              {Object.entries(garakByProbe).map(([probeKey, probeResults]) => {
+                const probePassed  = probeResults.filter((r) => r.passed).length;
+                const probeTotal   = probeResults.length;
+                const isProbeOpen  = garakProbeExpanded.has(probeKey);
+                const allResisted  = probePassed === probeTotal;
+                return (
+                  <div key={probeKey}>
+                    <button
+                      onClick={() => toggleGarakProbe(probeKey)}
+                      className="w-full flex items-center justify-between px-4 py-3 hover:bg-secondary/5 transition-colors"
+                    >
+                      <div className="flex items-center gap-2">
+                        <span className={`material-symbols-outlined text-sm ${allResisted ? "text-secondary" : "text-error"}`}>
+                          {allResisted ? "shield" : "security_update_warning"}
+                        </span>
+                        <p className="text-xs font-semibold">{metricLabel(probeKey)}</p>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${allResisted ? "badge-pass" : "badge-fail"}`}>
+                          {probePassed}/{probeTotal} blocked
+                        </span>
+                        <span className="material-symbols-outlined text-sm text-[var(--color-on-surface-variant)]">
+                          {isProbeOpen ? "expand_less" : "expand_more"}
+                        </span>
+                      </div>
+                    </button>
+                    {isProbeOpen && (
+                      <div className="px-4 pb-3 space-y-3 bg-[var(--color-surface-container-low)]">
+                        {probeResults[0]?.reasoning && (
+                          <p className="text-xs text-[var(--color-on-surface-variant)] leading-relaxed">
+                            {probeResults[0].reasoning}
+                          </p>
+                        )}
+                        {probeResults.map((r, idx) => (
+                          <div key={r.test_id} className="space-y-1.5">
+                            <div className="flex items-center gap-1.5">
+                              <span className={`material-symbols-outlined text-xs ${r.passed ? "text-secondary" : "text-error"}`}>
+                                {r.passed ? "shield" : "security_update_warning"}
+                              </span>
+                              <p className={`text-[10px] font-bold uppercase tracking-wider ${r.passed ? "text-secondary" : "text-error"}`}>
+                                Prompt {idx + 1} {r.passed ? "Resisted" : "Not Resisted"}
+                              </p>
+                            </div>
+                            <ConversationBlock
+                              input={r.input_text}
+                              output={r.output_text}
+                              inputLabel="Attack Prompt"
+                              outputLabel="AI Response"
+                            />
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -1362,13 +1493,13 @@ function ConversationBlock({
 }: { input: string; output: string; inputLabel?: string; outputLabel?: string }) {
   return (
     <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-      <div className="p-3 rounded-lg bg-[var(--color-surface-container-low)]">
-        <p className="text-[10px] font-bold uppercase tracking-wider text-[var(--color-on-surface-variant)] opacity-60 mb-1">{inputLabel}</p>
-        <p className="text-xs font-mono break-all">{input || "—"}</p>
+      <div className="p-3 rounded-lg bg-[var(--color-surface-container-low)] flex flex-col">
+        <p className="text-[10px] font-bold uppercase tracking-wider text-[var(--color-on-surface-variant)] opacity-60 mb-1 flex-shrink-0">{inputLabel}</p>
+        <div className="overflow-y-auto max-h-64 text-xs font-mono whitespace-pre-wrap break-words">{input || "—"}</div>
       </div>
-      <div className="p-3 rounded-lg bg-[var(--color-surface-container-low)]">
-        <p className="text-[10px] font-bold uppercase tracking-wider text-[var(--color-on-surface-variant)] opacity-60 mb-1">{outputLabel}</p>
-        <p className="text-xs break-all">{output || "—"}</p>
+      <div className="p-3 rounded-lg bg-[var(--color-surface-container-low)] flex flex-col">
+        <p className="text-[10px] font-bold uppercase tracking-wider text-[var(--color-on-surface-variant)] opacity-60 mb-1 flex-shrink-0">{outputLabel}</p>
+        <div className="overflow-y-auto max-h-64 text-xs whitespace-pre-wrap break-words">{output || "—"}</div>
       </div>
     </div>
   );

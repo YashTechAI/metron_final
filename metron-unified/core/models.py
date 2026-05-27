@@ -283,6 +283,8 @@ class RunConfig(BaseModel):
     # Security
     selected_attacks:      List[str] = ["jailbreak", "prompt_injection", "pii_extraction", "toxicity", "encoding"]
     attacks_per_category:  int = 3
+    # Garak adversarial probe depth: "off" | "basic" (11 curated probes) | "full" (all discovered)
+    garak_mode:            str = "basic"
 
     # Quality
     # deepeval_metrics controls which DeepEval metrics run in functional evaluation:

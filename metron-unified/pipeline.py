@@ -58,6 +58,7 @@ from stages.s4_evaluation.quality import evaluate_quality
 from stages.s4_evaluation.performance import evaluate_performance
 from stages.s4_evaluation.load import evaluate_load
 from stages.s4_evaluation.rag import evaluate_rag
+from stages.s4_evaluation.garak_eval import evaluate_garak
 from stages.s5_aggregation.aggregator import aggregate
 from stages.s7_report.report_generator import report_to_json, generate_html_report
 from stages.s8_rca.rca_mapper import run_rca
@@ -407,6 +408,31 @@ async def run_pipeline(
             return await eval_task
 
         func_results, sec_results, qual_results = await _run_evals_with_progress()
+
+        # ── Garak adversarial probes ───────────────────────────────────────────
+        # Always runs — 17 curated probes concurrently after main eval.
+        # Results use superset="security" and merge into sec_results.
+        garak_results: List[MetricResult] = []
+        _update(job_store, run_id, 73, "Running Garak adversarial probes (17 curated probes)…", "security")
+        _log(job_store, run_id, "phase_start", {"phase": "garak", "label": "Garak Adversarial Probes"})
+        try:
+            garak_results = await evaluate_garak(config, llm_client)
+            vuln_count = sum(1 for r in garak_results if not r.skipped and r.vulnerability_found)
+            _log(job_store, run_id, "garak_complete", {
+                "probes":          len(garak_results),
+                "vulnerabilities": vuln_count,
+            })
+            _update(
+                job_store, run_id, 74,
+                f"Garak: {len(garak_results)} probe(s) — {vuln_count} vulnerability/ies",
+                "security",
+                {"garak_probes": len(garak_results), "garak_vulns": vuln_count},
+            )
+        except Exception as _garak_err:
+            print(f"[Pipeline] Garak evaluation failed (non-fatal): {_garak_err}")
+            _update(job_store, run_id, 74, "Garak probes skipped", "security")
+
+        sec_results = sec_results + garak_results
 
         # ── Stream 2: Ground truth direct evaluation (RAG mode only) ─────────
         # Sends ground truth questions straight to the RAG endpoint with no persona
