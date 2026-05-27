@@ -1,6 +1,7 @@
 "use client";
 
-import { useState, useEffect, Suspense } from "react";
+import { useState, useEffect, Suspense, useCallback } from "react";
+import { ProgressFill } from "@/components/ProgressFill";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { authFetch } from "@/lib/api";
 
@@ -9,30 +10,59 @@ const API = "";
 // ── Metric display name mapping ───────────────────────────────────────────────
 const METRIC_LABELS: Record<string, string> = {
   // Functional
-  hallucination:          "Hallucination",
-  answer_relevancy:       "Answer Relevancy",
-  usefulness:             "Usefulness",
-  llm_judge:              "LLM Judge",
+  hallucination:                "Hallucination",
+  answer_relevancy:             "Answer Relevancy",
+  usefulness:                   "Usefulness",
+  llm_judge:                    "LLM Judge",
+  // Functional — per-turn LLM judge criteria
+  llm_relevance:                "LLM Relevance",
+  llm_accuracy:                 "LLM Accuracy",
+  llm_helpfulness:              "LLM Helpfulness",
+  llm_completeness:             "LLM Completeness",
+  llm_answer_similarity:        "LLM Answer Similarity",
+  // Functional — cross-turn evaluation
+  cross_turn_consistency:       "Cross-Turn Consistency",
+  cross_turn_context_awareness: "Cross-Turn Context Awareness",
+  // Functional — GEval
+  factual_accuracy:             "Factual Accuracy",
   // Security
-  pii_leakage:            "PII Leakage",
-  toxicity:               "Toxicity (Output)",
-  prompt_injection:       "Prompt Injection",
-  bias_fairness:          "Bias & Fairness",
-  toxic_request:          "Toxic Request",
-  attack_resistance:      "Attack Resistance",
+  pii_leakage:                  "PII Leakage",
+  toxicity:                     "Toxicity (Output)",
+  prompt_injection:             "Prompt Injection",
+  bias_fairness:                "Bias & Fairness",
+  toxic_request:                "Toxic Request",
+  attack_resistance:            "Attack Resistance",
+  // Security — Garak adversarial probes (17 curated probes)
+  garak_dan:                        "DAN 11.0 Jailbreak",
+  garak_antidan:                    "AntiDAN Bypass",
+  garak_dan_wild:                   "DAN In The Wild",
+  garak_dan_ablation:               "DAN Ablation Variants",
+  garak_autodan:                    "AutoDAN Adversarial",
+  garak_stan:                       "STAN (Strive To Avoid Norms)",
+  garak_fictional_framing:          "Fictional Framing Attack",
+  garak_grandma:                    "Grandma Exploit",
+  garak_system_prompt_extract:      "System Prompt Extraction",
+  garak_instruction_override:       "Instruction Override",
+  garak_many_shot:                  "Many-Shot Jailbreak",
+  garak_encoding_base64:            "Base64 Encoding Injection",
+  garak_encoding_rot13:             "ROT13 Encoding Injection",
+  garak_encoding_hex:               "Hex Encoding Injection",
+  garak_encoding_leet:              "Leetspeak Injection",
+  garak_encoding_morse:             "Morse Code Injection",
+  garak_encoding_zalgo:             "Zalgo Unicode Injection",
   // Quality
-  geval_overall:          "GEval Overall",
-  ragas_faithfulness:     "Faithfulness (RAGAS)",
-  ragas_answer_relevancy: "Answer Relevancy (RAGAS)",
-  ragas_context_recall:   "Context Recall (RAGAS)",
-  ragas_context_precision:"Context Precision (RAGAS)",
+  geval_overall:                "GEval Overall",
+  ragas_faithfulness:           "Faithfulness (RAGAS)",
+  ragas_answer_relevancy:       "Answer Relevancy (RAGAS)",
+  ragas_context_recall:         "Context Recall (RAGAS)",
+  ragas_context_precision:      "Context Precision (RAGAS)",
   // RAG evaluation — RAGAS
-  rag_faithfulness:       "Faithfulness (RAGAS)",
-  rag_context_recall:     "Context Recall (RAGAS)",
-  rag_context_precision:  "Context Precision (RAGAS)",
+  rag_faithfulness:             "Faithfulness (RAGAS)",
+  rag_context_recall:           "Context Recall (RAGAS)",
+  rag_context_precision:        "Context Precision (RAGAS)",
   // RAG evaluation — DeepEval
-  rag_answer_relevancy:   "Answer Relevancy (DeepEval)",
-  rag_context_relevancy:  "Context Relevancy (DeepEval)",
+  rag_answer_relevancy:         "Answer Relevancy (DeepEval)",
+  rag_context_relevancy:        "Context Relevancy (DeepEval)",
 };
 
 function metricLabel(name: string): string {
@@ -45,7 +75,11 @@ function metricLabel(name: string): string {
 
 // Security metrics: detection = pass means no issue found; resistance = pass means attack was blocked
 function isDetectionMetric(name: string) { return ["pii_leakage", "toxicity", "bias_fairness"].includes(name); }
-function isResistanceMetric(name: string) { return ["prompt_injection", "attack_resistance", "toxic_request"].includes(name); }
+function isResistanceMetric(name: string) {
+  // All garak_* metrics are resistance tests (higher score = more attacks blocked)
+  if (name.startsWith("garak_")) return true;
+  return ["prompt_injection", "attack_resistance", "toxic_request"].includes(name);
+}
 
 // ─────────────────────────────────── Types ────────────────────────────────────
 interface TestResult {
@@ -62,14 +96,19 @@ interface TestResult {
   failure_taxonomy_label?: string;
   failure_reason?: string;
   details: Record<string, unknown>;
+  manually_passed?: boolean;
+  original_score?: number;
+  original_passed?: boolean;
 }
 
 interface PhaseSummary {
   total: number;
   passed: number;
   failed: number;
+  skipped?: number;
   pass_rate: number;
   avg_score: number;
+  evaluation_warnings?: string[];
   results: TestResult[];
 }
 
@@ -100,33 +139,31 @@ interface LoadMetrics {
   tool_used: string;
 }
 
-interface RCAFinding {
-  rank: number;
-  id: string;
-  label: string;
-  reason?: string;
-  category: string;
-  category_id: string;
-  probability: number;
-  affected_count: number;
-  evidence: string[];
-  remediation: string;
-}
 
-interface RCAReport {
-  total_failed: number;
-  total_analyzed: number;
-  relevant_points: number;
-  filtered_points: number;
-  architecture_summary: Record<string, unknown>;
-  signal_summary: Record<string, number>;
-  top_causes: RCAFinding[];
+interface StageTotals { calls: number; total_tokens: number; cost_usd: number; }
+interface TokenSummary {
+  total_calls: number;
+  total_prompt_tokens: number;
+  total_completion_tokens: number;
+  total_tokens: number;
+  estimated_cost_usd: number;
+  avg_latency_ms: number;
+  tpot_ms: number;
+  token_efficiency_ratio: number;
+  tpm_velocity: number;
+  retry_count: number;
+  truncated_calls: number;
+  truncation_rate: number;
+  models_used: Record<string, number>;
+  by_stage: Record<string, StageTotals>;
+  mlflow_run_id?: string;
 }
 
 interface FullResults {
   run_id: string;
   health_score: number;
   passed: boolean;
+  user_role?: string;
   domain: string;
   agent_name: string;
   config_summary: Record<string, unknown>;
@@ -136,7 +173,6 @@ interface FullResults {
   rag?: PhaseSummary;
   performance: PerformanceMetrics;
   load: LoadMetrics;
-  rca?: RCAReport;
   personas: Array<{ id: string; name: string; description: string; traits: string[] }>;
   persona_breakdown: Array<{
     persona_id: string;
@@ -151,7 +187,129 @@ interface FullResults {
   failure_drill_down: TestResult[];
   total_tests: number;
   total_passed: number;
+  total_skipped?: number;
+  evaluation_warnings?: string[];
   report_html?: string;
+}
+
+// ── Domain weights (mirrors backend config.py DOMAIN_WEIGHTS) ──────────────────
+const DOMAIN_WEIGHTS: Record<string, Record<string, number>> = {
+  finance:          { functional: 0.35, security: 0.40, quality: 0.10, performance: 0.10, load: 0.05 },
+  banking:          { functional: 0.35, security: 0.40, quality: 0.10, performance: 0.10, load: 0.05 },
+  medical:          { functional: 0.35, security: 0.45, quality: 0.10, performance: 0.08, load: 0.02 },
+  healthcare:       { functional: 0.35, security: 0.45, quality: 0.10, performance: 0.08, load: 0.02 },
+  legal:            { functional: 0.35, security: 0.40, quality: 0.15, performance: 0.07, load: 0.03 },
+  travel:           { functional: 0.35, security: 0.15, quality: 0.10, performance: 0.25, load: 0.15 },
+  ecommerce:        { functional: 0.35, security: 0.20, quality: 0.10, performance: 0.20, load: 0.15 },
+  retail:           { functional: 0.35, security: 0.20, quality: 0.10, performance: 0.20, load: 0.15 },
+  hr:               { functional: 0.35, security: 0.35, quality: 0.15, performance: 0.10, load: 0.05 },
+  human_resources:  { functional: 0.35, security: 0.35, quality: 0.15, performance: 0.10, load: 0.05 },
+  education:        { functional: 0.40, security: 0.15, quality: 0.30, performance: 0.10, load: 0.05 },
+  support:          { functional: 0.40, security: 0.15, quality: 0.15, performance: 0.20, load: 0.10 },
+  customer_support: { functional: 0.40, security: 0.15, quality: 0.15, performance: 0.20, load: 0.10 },
+  email:            { functional: 0.45, security: 0.15, quality: 0.25, performance: 0.10, load: 0.05 },
+  government:       { functional: 0.30, security: 0.45, quality: 0.15, performance: 0.07, load: 0.03 },
+  _default:         { functional: 0.40, security: 0.30, quality: 0.10, performance: 0.15, load: 0.05 },
+};
+
+function getWeights(domain: string) {
+  return DOMAIN_WEIGHTS[domain?.toLowerCase()] ?? DOMAIN_WEIGHTS._default;
+}
+
+function applyManualPass(
+  prev: FullResults,
+  phase: "functional" | "security" | "quality" | "rag",
+  testId: string,
+): FullResults {
+  const phaseData = prev[phase];
+  if (!phaseData) return prev;
+
+  const newResults = phaseData.results.map(r =>
+    r.test_id === testId ? {
+      ...r,
+      score: 1.0,
+      passed: true,
+      manually_passed: true,
+      original_score: r.manually_passed ? r.original_score : r.score,
+      original_passed: r.manually_passed ? r.original_passed : r.passed,
+    } : r
+  );
+  const newPassed   = newResults.filter(r => r.passed).length;
+  const newFailed   = newResults.length - newPassed;
+  const newAvgScore = newResults.length > 0 ? newResults.reduce((s, r) => s + r.score, 0) / newResults.length : 0;
+  const newPassRate = newResults.length > 0 ? Math.round((newPassed / newResults.length) * 100) : 0;
+  const newPhaseData: PhaseSummary = { ...phaseData, results: newResults, passed: newPassed, failed: newFailed, avg_score: newAvgScore, pass_rate: newPassRate };
+
+  const weights      = getWeights(prev.domain);
+  const totalWeight  = Object.values(weights).reduce((a, b) => a + b, 0);
+  // pass_rate is stored as 0-100 in frontend; backend health uses 0-1 scale
+  const funcPR       = phase === "functional" ? newPassRate / 100 : (prev.functional?.pass_rate ?? 0) / 100;
+  const secPR        = phase === "security"   ? newPassRate / 100 : (prev.security?.pass_rate  ?? 0) / 100;
+  const qualPR       = phase === "quality"    ? newPassRate / 100 : (prev.quality?.pass_rate   ?? 0) / 100;
+  const oldContrib   = (prev.functional?.pass_rate ?? 0) / 100 * (weights.functional ?? 0)
+                     + (prev.security?.pass_rate   ?? 0) / 100 * (weights.security   ?? 0)
+                     + (prev.quality?.pass_rate    ?? 0) / 100 * (weights.quality    ?? 0);
+  const perfLoad     = prev.health_score * totalWeight - oldContrib;
+  const newHealth    = Math.min(1, Math.max(0,
+    (funcPR * (weights.functional ?? 0) + secPR * (weights.security ?? 0) + qualPR * (weights.quality ?? 0) + perfLoad) / totalWeight
+  ));
+
+  const allResults = [
+    ...(phase === "functional" ? newResults : prev.functional?.results ?? []),
+    ...(phase === "security"   ? newResults : prev.security?.results   ?? []),
+    ...(phase === "quality"    ? newResults : prev.quality?.results    ?? []),
+    ...(phase === "rag"        ? newResults : prev.rag?.results        ?? []),
+  ];
+
+  return { ...prev, [phase]: newPhaseData, health_score: newHealth, passed: newHealth >= 0.50, total_passed: allResults.filter(r => r.passed).length };
+}
+
+function applyManualRevert(
+  prev: FullResults,
+  phase: "functional" | "security" | "quality" | "rag",
+  testId: string,
+): FullResults {
+  const phaseData = prev[phase];
+  if (!phaseData) return prev;
+
+  const newResults = phaseData.results.map(r =>
+    r.test_id === testId ? {
+      ...r,
+      score: r.original_score ?? r.score,
+      passed: r.original_passed ?? r.passed,
+      manually_passed: false,
+      original_score: undefined,
+      original_passed: undefined,
+    } : r
+  );
+  const newPassed   = newResults.filter(r => r.passed).length;
+  const newFailed   = newResults.length - newPassed;
+  const newAvgScore = newResults.length > 0 ? newResults.reduce((s, r) => s + r.score, 0) / newResults.length : 0;
+  const newPassRate = newResults.length > 0 ? Math.round((newPassed / newResults.length) * 100) : 0;
+  const newPhaseData: PhaseSummary = { ...phaseData, results: newResults, passed: newPassed, failed: newFailed, avg_score: newAvgScore, pass_rate: newPassRate };
+
+  const weights     = getWeights(prev.domain);
+  const totalWeight = Object.values(weights).reduce((a, b) => a + b, 0);
+  // pass_rate is stored as 0-100 in frontend; backend health uses 0-1 scale
+  const funcPR      = phase === "functional" ? newPassRate / 100 : (prev.functional?.pass_rate ?? 0) / 100;
+  const secPR       = phase === "security"   ? newPassRate / 100 : (prev.security?.pass_rate  ?? 0) / 100;
+  const qualPR      = phase === "quality"    ? newPassRate / 100 : (prev.quality?.pass_rate   ?? 0) / 100;
+  const oldContrib  = (prev.functional?.pass_rate ?? 0) / 100 * (weights.functional ?? 0)
+                    + (prev.security?.pass_rate   ?? 0) / 100 * (weights.security   ?? 0)
+                    + (prev.quality?.pass_rate    ?? 0) / 100 * (weights.quality    ?? 0);
+  const perfLoad    = prev.health_score * totalWeight - oldContrib;
+  const newHealth   = Math.min(1, Math.max(0,
+    (funcPR * (weights.functional ?? 0) + secPR * (weights.security ?? 0) + qualPR * (weights.quality ?? 0) + perfLoad) / totalWeight
+  ));
+
+  const allResults = [
+    ...(phase === "functional" ? newResults : prev.functional?.results ?? []),
+    ...(phase === "security"   ? newResults : prev.security?.results   ?? []),
+    ...(phase === "quality"    ? newResults : prev.quality?.results    ?? []),
+    ...(phase === "rag"        ? newResults : prev.rag?.results        ?? []),
+  ];
+
+  return { ...prev, [phase]: newPhaseData, health_score: newHealth, passed: newHealth >= 0.50, total_passed: allResults.filter(r => r.passed).length };
 }
 
 // ─────────────────────────────── Component ────────────────────────────────────
@@ -178,6 +336,7 @@ function ResultsContent() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [activeTab, setActiveTab] = useState(0);
+  const [tokenData, setTokenData] = useState<TokenSummary | null>(null);
 
   useEffect(() => {
     const runId =
@@ -194,15 +353,71 @@ function ResultsContent() {
         return r.json();
       })
       .then((data) => {
-        // Attach run_id into results
-        setResults({ ...data, run_id: runId });
+        const base = { ...data, run_id: runId } as FullResults;
+        // Re-apply any manually passed tests saved from a previous visit
+        type SavedEntry = { phase: "functional" | "security" | "quality" | "rag"; originalScore: number; originalPassed: boolean };
+        const saved = JSON.parse(sessionStorage.getItem(`manual_passes_${runId}`) || "{}") as Record<string, SavedEntry>;
+        const withPasses = Object.entries(saved).reduce(
+          (acc, [testId, entry]) => {
+            const phaseData = acc[entry.phase];
+            if (!phaseData) return acc;
+            const preSeeded: FullResults = {
+              ...acc,
+              [entry.phase]: {
+                ...phaseData,
+                results: phaseData.results.map(r =>
+                  r.test_id === testId
+                    ? { ...r, original_score: entry.originalScore, original_passed: entry.originalPassed }
+                    : r
+                ),
+              },
+            };
+            return applyManualPass(preSeeded, entry.phase, testId);
+          },
+          base,
+        );
+        setResults(withPasses);
         setLoading(false);
+        // Fetch token summary from MLflow (best-effort, silent on failure)
+        authFetch(`${API}/api/job/${runId}/token-summary`)
+          .then(r => r.ok ? r.json() : null)
+          .then(data => { if (data?.total_tokens > 0) setTokenData(data as TokenSummary); })
+          .catch(() => {});
       })
       .catch((e) => {
         setError(e.message);
         setLoading(false);
       });
   }, [projectId]);
+
+  const handleManualPass = useCallback((phase: "functional" | "security" | "quality" | "rag", testId: string) => {
+    setResults(prev => {
+      if (!prev) return prev;
+      const key = `manual_passes_${prev.run_id}`;
+      const saved = JSON.parse(sessionStorage.getItem(key) || "{}");
+      const test = prev[phase]?.results.find(r => r.test_id === testId);
+      if (test && !test.manually_passed) {
+        saved[testId] = { phase, originalScore: test.score, originalPassed: test.passed };
+        sessionStorage.setItem(key, JSON.stringify(saved));
+      }
+      const next = applyManualPass(prev, phase, testId);
+      sessionStorage.setItem(`run_health_${prev.run_id}`, String(next.health_score));
+      return next;
+    });
+  }, []);
+
+  const handleManualRevert = useCallback((phase: "functional" | "security" | "quality" | "rag", testId: string) => {
+    setResults(prev => {
+      if (!prev) return prev;
+      const key = `manual_passes_${prev.run_id}`;
+      const saved = JSON.parse(sessionStorage.getItem(key) || "{}");
+      delete saved[testId];
+      sessionStorage.setItem(key, JSON.stringify(saved));
+      const next = applyManualRevert(prev, phase, testId);
+      sessionStorage.setItem(`run_health_${prev.run_id}`, String(next.health_score));
+      return next;
+    });
+  }, []);
 
   const downloadJSON = () => {
     if (!results) return;
@@ -290,49 +505,42 @@ function ResultsContent() {
     if (!results) return;
     const r = results;
 
-    const rcaSection = r.rca ? `
-## Root Cause Analysis
-> Analysed ${r.rca.total_analyzed} results · ${r.rca.total_failed} failures · ${r.rca.relevant_points} relevant failure points (${r.rca.filtered_points} excluded by architecture filter)
 
-### Observed Signals
-${Object.entries(r.rca.signal_summary).map(([k, v]) => `- ${k.replace(/_/g, " ")}: ${v}`).join("\n")}
+    const isFullRunMd = ["all", "tenant_admin", "super_admin"].includes(r.user_role ?? "all");
+    const scoreLineMd = isFullRunMd
+      ? `Health Score: ${(r.health_score * 100).toFixed(1)}% | ${r.passed ? "PASSED" : "FAILED"}`
+      : `Tests Passed: ${r.total_passed}/${r.total_tests} | ${(r.user_role ?? "").replace(/_/g, " ")} run`;
 
-### Top Probable Root Causes
-${r.rca.top_causes.map(c => {
-  const pct = Math.round(c.probability * 100);
-  const level = pct >= 70 ? "🔴 HIGH" : pct >= 45 ? "🟠 MEDIUM" : "🔵 LOW";
-  return `#### #${c.rank} [${c.id}] ${c.label}
-- **Category:** ${c.category}
-- **Probability:** ${pct}% ${level}
-- **Affected:** ${c.affected_count} prompt(s)
-- **Evidence:** ${c.evidence.slice(0, 2).join("; ")}
-- **Fix:** ${c.remediation}`;
-}).join("\n\n")}
-` : "";
+    const summaryRows = [
+      (r.functional?.total ?? 0) > 0 ? `| Functional | ${r.functional!.passed} | ${r.functional!.total} | ${r.functional!.pass_rate}% |` : null,
+      (r.security?.total ?? 0) > 0   ? `| Security   | ${r.security!.passed}   | ${r.security!.total}   | ${r.security!.pass_rate}% |`   : null,
+      (r.quality?.total ?? 0) > 0    ? `| Quality    | ${r.quality!.passed}    | ${r.quality!.total}    | ${r.quality!.pass_rate}% |`    : null,
+    ].filter(Boolean).join("\n");
+
+    const perfSection = (r.performance?.avg_latency ?? 0) > 0 ? `
+## Performance
+- Avg Latency: ${(r.performance!.avg_latency ?? 0).toFixed(0)}ms
+- P95: ${(r.performance!.p95_latency ?? 0).toFixed(0)}ms
+- Throughput: ${(r.performance!.throughput ?? 0).toFixed(2)} req/s
+- Error Rate: ${(r.performance!.error_rate ?? 0).toFixed(1)}%` : "";
+
+    const loadSection = (r.load?.requests_per_second ?? 0) > 0 ? `
+## Load Test
+- Concurrent Users: ${r.load!.concurrent_users ?? 0}
+- Throughput: ${(r.load!.requests_per_second ?? 0).toFixed(2)} req/s
+- Error Rate: ${(r.load!.error_rate ?? 0).toFixed(1)}%` : "";
 
     const md = `# METRON QA Report
 Generated: ${new Date().toLocaleString()}
 Agent: ${r.agent_name || "—"} | Domain: ${r.domain}
-Health Score: ${(r.health_score * 100).toFixed(1)}% | ${r.passed ? "PASSED" : "FAILED"}
+${scoreLineMd}
 
 ## Summary
 | Phase | Passed | Total | Pass Rate |
 |-------|--------|-------|-----------|
-| Functional | ${r.functional?.passed ?? 0} | ${r.functional?.total ?? 0} | ${r.functional?.pass_rate ?? 0}% |
-| Security | ${r.security?.passed ?? 0} | ${r.security?.total ?? 0} | ${r.security?.pass_rate ?? 0}% |
-| Quality | ${r.quality?.passed ?? 0} | ${r.quality?.total ?? 0} | ${r.quality?.pass_rate ?? 0}% |
-
-## Performance
-- Avg Latency: ${(r.performance?.avg_latency ?? 0).toFixed(0)}ms
-- P95: ${(r.performance?.p95_latency ?? 0).toFixed(0)}ms
-- Throughput: ${(r.performance?.throughput ?? 0).toFixed(2)} req/s
-- Error Rate: ${(r.performance?.error_rate ?? 0).toFixed(1)}%
-
-## Load Test
-- Concurrent Users: ${r.load?.concurrent_users ?? 0}
-- Throughput: ${(r.load?.requests_per_second ?? 0).toFixed(2)} req/s
-- Error Rate: ${(r.load?.error_rate ?? 0).toFixed(1)}%
-${rcaSection}`;
+${summaryRows}
+${perfSection}
+${loadSection}`;
     const blob = new Blob([md], { type: "text/markdown" });
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
@@ -363,12 +571,38 @@ ${rcaSection}`;
 
   const healthPct = Math.round(results.health_score * 100);
   const healthColor = healthPct >= 70 ? "text-secondary" : healthPct >= 40 ? "text-[#855300]" : "text-error";
+  const isFullRun = ["all", "tenant_admin", "super_admin"].includes(results.user_role ?? "all");
+
+  const _KNOWN_PHASES = new Set(["functional", "security", "quality", "performance", "load"]);
+  const _ROLE_PHASES: Record<string, Set<string>> = {
+    "functional_tester":   new Set(["functional"]),
+    "security_tester":     new Set(["security"]),
+    "quality":             new Set(["quality"]),
+    "performance":         new Set(["performance"]),
+    "load":                new Set(["load"]),
+    "security+functional": new Set(["security", "functional"]),
+    "functional+quality":  new Set(["functional", "quality"]),
+    "performance+load":    new Set(["performance", "load"]),
+    "all":                 _KNOWN_PHASES,
+    "tenant_admin":        _KNOWN_PHASES,
+    "super_admin":         _KNOWN_PHASES,
+  };
+  const _resolvePhases = (role: string): Set<string> => {
+    if (_ROLE_PHASES[role]) return _ROLE_PHASES[role];
+    // Dynamic: "functional+security+load" → parse each part
+    const parts = new Set(role.split("+").filter(p => _KNOWN_PHASES.has(p)));
+    return parts.size > 0 ? parts : _KNOWN_PHASES;
+  };
+  const activePhases = _resolvePhases(results.user_role ?? "all");
 
   const TABS = [
-    "Functional", "Security", "Quality",
-    ...(results.rag ? ["RAG"] : []),
-    "Performance", "Load Test",
-    ...(results.rca ? ["RCA"] : []),
+    ...(activePhases.has("functional") ? ["Functional"] : []),
+    ...(activePhases.has("security") ? ["Security"] : []),
+    ...(activePhases.has("quality") ? ["Quality"] : []),
+    ...(results.rag && activePhases.has("functional") ? ["RAG"] : []),
+    ...(activePhases.has("performance") ? ["Performance"] : []),
+    ...(activePhases.has("load") ? ["Load Test"] : []),
+    "LLMOps",
     "Export",
   ];
 
@@ -387,25 +621,37 @@ ${rcaSection}`;
           <p className="text-[var(--color-on-surface-variant)] text-sm opacity-60">{results.domain}</p>
         </div>
 
-        {/* Health Score */}
+        {/* Score card — health score for full runs, passed/total for partial */}
         <div className="card p-6 flex flex-col items-center gap-2 min-w-[140px]">
-          <p className="text-xs font-bold uppercase tracking-widest text-[var(--color-on-surface-variant)] opacity-60">Health Score</p>
-          <p className={`font-headline text-5xl font-black ${healthColor}`}>{healthPct}%</p>
-          <span className={`text-xs font-bold px-3 py-1 rounded-full ${results.passed ? "badge-pass" : "badge-fail"}`}>
-            {results.passed ? "PASSED" : "FAILED"}
-          </span>
+          {isFullRun ? (
+            <>
+              <p className="text-xs font-bold uppercase tracking-widest text-[var(--color-on-surface-variant)] opacity-60">Health Score</p>
+              <p className={`font-headline text-5xl font-black ${healthColor}`}>{healthPct}%</p>
+              <span className={`text-xs font-bold px-3 py-1 rounded-full ${results.passed ? "badge-pass" : "badge-fail"}`}>
+                {results.passed ? "PASSED" : "FAILED"}
+              </span>
+            </>
+          ) : (
+            <>
+              <p className="text-xs font-bold uppercase tracking-widest text-[var(--color-on-surface-variant)] opacity-60">Tests Passed</p>
+              <p className="font-headline text-5xl font-black text-primary">{results.total_passed}/{results.total_tests}</p>
+              <span className="text-xs font-bold text-[var(--color-on-surface-variant)] opacity-60 capitalize">
+                {(results.user_role ?? "").replace(/_/g, " ")}
+              </span>
+            </>
+          )}
         </div>
       </div>
 
-      {/* Summary Cards */}
+      {/* Summary Cards — only show phases that were run */}
       <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
         {[
-          { label: "Functional", icon: "science", color: "text-primary", value: results.functional ? `${results.functional.passed}/${results.functional.total}` : "—", sub: results.functional ? `${results.functional.pass_rate}%` : "" },
-          { label: "Security", icon: "security", color: "text-error", value: results.security ? `${results.security.passed}/${results.security.total}` : "—", sub: results.security ? `${results.security.pass_rate}%` : "" },
-          { label: "Quality", icon: "grade", color: "text-secondary", value: results.quality ? `${results.quality.passed}/${results.quality.total}` : "—", sub: results.quality ? `${results.quality.pass_rate}%` : "" },
-          { label: "Performance", icon: "speed", color: "text-[#855300]", value: results.performance ? `${(results.performance.avg_latency ?? 0).toFixed(0)}ms` : "—", sub: "avg latency" },
-          { label: "Load", icon: "group", color: "text-[var(--color-on-surface-variant)]", value: results.load ? `${(results.load.error_rate ?? 0).toFixed(1)}%` : "—", sub: "error rate" },
-        ].map((item) => (
+          { label: "Functional", phase: "functional", icon: "science", color: "text-primary", value: results.functional ? `${results.functional.passed}/${results.functional.total}` : "—", sub: results.functional ? `${results.functional.pass_rate}%` : "" },
+          { label: "Security", phase: "security", icon: "security", color: "text-error", value: results.security ? `${results.security.passed}/${results.security.total}` : "—", sub: results.security ? `${results.security.pass_rate}%` : "" },
+          { label: "Quality", phase: "quality", icon: "grade", color: "text-secondary", value: results.quality ? `${results.quality.passed}/${results.quality.total}` : "—", sub: results.quality ? `${results.quality.pass_rate}%` : "" },
+          { label: "Performance", phase: "performance", icon: "speed", color: "text-[#855300]", value: results.performance ? `${(results.performance.avg_latency ?? 0).toFixed(0)}ms` : "—", sub: "avg latency" },
+          { label: "Load", phase: "load", icon: "group", color: "text-[var(--color-on-surface-variant)]", value: results.load ? `${(results.load.error_rate ?? 0).toFixed(1)}%` : "—", sub: "error rate" },
+        ].filter(item => activePhases.has(item.phase)).map((item) => (
           <div key={item.label} className="card p-4 text-center">
             <span className={`material-symbols-outlined text-xl ${item.color}`}>{item.icon}</span>
             <p className="font-headline text-2xl font-black text-[var(--color-on-surface)] mt-1">{item.value}</p>
@@ -431,29 +677,14 @@ ${rcaSection}`;
 
         {/* Tab content */}
         <div className="p-6">
-          {/* ── Tab 0: Functional ── */}
-          {activeTab === 0 && <FunctionalTab data={results.functional} personaBreakdown={results.persona_breakdown} />}
-
-          {/* ── Tab 1: Security ── */}
-          {activeTab === 1 && <SecurityTab data={results.security} />}
-
-          {/* ── Tab 2: Quality ── */}
-          {activeTab === 2 && <QualityTab data={results.quality} />}
-
-          {/* ── Tab 3: RAG (only present in RAG mode) ── */}
-          {results.rag && activeTab === 3 && <RAGTab data={results.rag} />}
-
-          {/* ── Performance / Load / RCA / Export — indices shift with optional RAG tab ── */}
-          {(() => {
-            const base = results.rag ? 4 : 3;
-            const rcaIdx   = results.rca ? base + 2 : -1;
-            const exportIdx = results.rca ? base + 3 : base + 2;
-            return (
-              <>
-                {activeTab === base     && <PerformanceTab data={results.performance} />}
-                {activeTab === base + 1 && <LoadTab data={results.load} />}
-                {results.rca && activeTab === rcaIdx && <RCATab data={results.rca} />}
-                {activeTab === exportIdx && (
+          {TABS[activeTab] === "Functional" && <FunctionalTab data={results.functional} personaBreakdown={results.persona_breakdown} onManualPass={(id) => handleManualPass("functional", id)} onManualRevert={(id) => handleManualRevert("functional", id)} />}
+          {TABS[activeTab] === "Security" && <SecurityTab data={results.security} onManualPass={(id) => handleManualPass("security", id)} onManualRevert={(id) => handleManualRevert("security", id)} />}
+          {TABS[activeTab] === "Quality" && <QualityTab data={results.quality} onManualPass={(id) => handleManualPass("quality", id)} onManualRevert={(id) => handleManualRevert("quality", id)} />}
+          {TABS[activeTab] === "RAG" && results.rag && <RAGTab data={results.rag} onManualPass={(id) => handleManualPass("rag", id)} onManualRevert={(id) => handleManualRevert("rag", id)} />}
+          {TABS[activeTab] === "Performance" && <PerformanceTab data={results.performance} />}
+          {TABS[activeTab] === "Load Test" && <LoadTab data={results.load} />}
+          {TABS[activeTab] === "LLMOps" && <LLMOpsTab data={tokenData} />}
+          {TABS[activeTab] === "Export" && (
             <div className="space-y-4">
               <p className="text-sm text-[var(--color-on-surface-variant)] opacity-70">Download the test results in various formats.</p>
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
@@ -491,10 +722,7 @@ ${rcaSection}`;
                 />
               </div>
             </div>
-                )}
-              </>
-            );
-          })()}
+          )}
         </div>
       </div>
 
@@ -516,9 +744,13 @@ ${rcaSection}`;
 function FunctionalTab({
   data,
   personaBreakdown,
+  onManualPass,
+  onManualRevert,
 }: {
   data: PhaseSummary;
   personaBreakdown: FullResults["persona_breakdown"];
+  onManualPass?: (id: string) => void;
+  onManualRevert?: (id: string) => void;
 }) {
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   if (!data?.results) return <EmptyState />;
@@ -540,9 +772,20 @@ function FunctionalTab({
           { label: "Total Tests", value: data.total },
           { label: "Passed", value: data.passed, color: "text-secondary" },
           { label: "Failed", value: data.failed, color: "text-error" },
-          { label: "Avg Score", value: `${(data.avg_score * 100).toFixed(1)}%` },
+          { label: "Skipped", value: data.skipped ?? 0, color: (data.skipped ?? 0) > 0 ? "text-[#855300]" : undefined },
         ]}
       />
+
+      {(data.evaluation_warnings?.length ?? 0) > 0 && (
+        <div className="space-y-2">
+          {data.evaluation_warnings!.map((w, i) => (
+            <div key={i} className="flex items-start gap-2 p-3 rounded-xl border border-[#855300]/30 bg-[#855300]/5">
+              <span className="material-symbols-outlined text-base text-[#855300] flex-shrink-0 mt-0.5">warning</span>
+              <p className="text-xs text-[#855300] leading-relaxed">{w}</p>
+            </div>
+          ))}
+        </div>
+      )}
 
       {Object.entries(byCategory).map(([cat, results]) => {
         const catPassed = results.filter((r) => r.passed).length;
@@ -569,7 +812,7 @@ function FunctionalTab({
             {expanded.has(cat) && (
               <div className="divide-y divide-[var(--color-outline-variant)]">
                 {results.map((r) => (
-                  <TestResultRow key={r.test_id} result={r} />
+                  <TestResultRow key={r.test_id} result={r} onManualPass={onManualPass} onManualRevert={onManualRevert} />
                 ))}
               </div>
             )}
@@ -622,20 +865,35 @@ function FunctionalTab({
 }
 
 // ─────────────────────── Security Tab ─────────────────────────────────────
-function SecurityTab({ data }: { data: PhaseSummary }) {
+function SecurityTab({ data, onManualPass, onManualRevert }: { data: PhaseSummary; onManualPass?: (id: string) => void; onManualRevert?: (id: string) => void }) {
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const [garakExpanded, setGarakExpanded] = useState(false);
+  const [garakProbeExpanded, setGarakProbeExpanded] = useState<Set<string>>(new Set());
   if (!data?.results) return <EmptyState />;
 
   const secScore = data.pass_rate;
   const scoreColor = secScore >= 90 ? "text-secondary" : secScore >= 70 ? "text-[#855300]" : "text-error";
   const toggle = (id: string) => setExpanded((prev) => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  const toggleGarakProbe = (id: string) => setGarakProbeExpanded((prev) => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
 
-  // Group by full metric name (category field now holds the full metric_name)
+  // Split garak vs non-garak results
+  const garakResults = data.results.filter((r) => (r.category || "").startsWith("garak_"));
+  const nonGarakResults = data.results.filter((r) => !(r.category || "").startsWith("garak_"));
+
+  // Group non-garak by category
   const byCategory: Record<string, TestResult[]> = {};
-  for (const r of data.results) {
+  for (const r of nonGarakResults) {
     const cat = r.category || "general";
     if (!byCategory[cat]) byCategory[cat] = [];
     byCategory[cat].push(r);
+  }
+
+  // Group garak by probe (category = metric_name e.g. "garak_dan")
+  const garakByProbe: Record<string, TestResult[]> = {};
+  for (const r of garakResults) {
+    const cat = r.category || "garak_unknown";
+    if (!garakByProbe[cat]) garakByProbe[cat] = [];
+    garakByProbe[cat].push(r);
   }
 
   // Ordered display: detection metrics first, then resistance metrics
@@ -645,6 +903,13 @@ function SecurityTab({ data }: { data: PhaseSummary }) {
     return (ai === -1 ? 99 : ai) - (bi === -1 ? 99 : bi);
   });
 
+  // Garak summary stats — probe-level (a probe "passes" only if every prompt was resisted)
+  const garakProbeCount  = Object.keys(garakByProbe).length;
+  const garakPassed      = Object.values(garakByProbe).filter(
+    (hits) => hits.every((r) => r.passed),
+  ).length;
+  const garakVulns       = garakProbeCount - garakPassed;
+
   return (
     <div className="space-y-6">
       <div className="flex items-center gap-4 p-4 rounded-xl bg-[var(--color-surface-container-low)]">
@@ -653,11 +918,24 @@ function SecurityTab({ data }: { data: PhaseSummary }) {
           <p className="font-semibold">Security Score</p>
           <p className="text-xs text-[var(--color-on-surface-variant)] opacity-60">
             {data.passed}/{data.total} checks passed
+            {(data.skipped ?? 0) > 0 && ` · ${data.skipped} skipped`}
             {secScore >= 90 ? " — Excellent" : secScore >= 70 ? " — Acceptable" : " — Needs Improvement"}
           </p>
         </div>
       </div>
 
+      {(data.evaluation_warnings?.length ?? 0) > 0 && (
+        <div className="space-y-2">
+          {data.evaluation_warnings!.map((w, i) => (
+            <div key={i} className="flex items-start gap-2 p-3 rounded-xl border border-[#855300]/30 bg-[#855300]/5">
+              <span className="material-symbols-outlined text-base text-[#855300] flex-shrink-0 mt-0.5">warning</span>
+              <p className="text-xs text-[#855300] leading-relaxed">{w}</p>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* ── Standard security checks ── */}
       {sortedEntries.map(([cat, results]) => {
         const passed = results.filter((r) => r.passed).length;
         const passLabel = isDetectionMetric(cat)
@@ -674,7 +952,7 @@ function SecurityTab({ data }: { data: PhaseSummary }) {
             >
               <div className="flex items-center gap-3">
                 <span className={`material-symbols-outlined text-base ${passed === results.length ? "text-secondary" : "text-error"}`}>
-                  {passed === results.length ? "shield" : "shield_with_warning"}
+                  {passed === results.length ? "shield" : "gpp_bad"}
                 </span>
                 <p className="text-sm font-black">{metricLabel(cat)}</p>
               </div>
@@ -699,6 +977,18 @@ function SecurityTab({ data }: { data: PhaseSummary }) {
                       <span className={`text-[10px] font-black ml-auto ${r.passed ? "text-secondary" : "text-error"}`}>
                         {(r.score * 100).toFixed(0)}%
                       </span>
+                      {(onManualPass || onManualRevert) && (
+                        <button
+                          onClick={() => { r.manually_passed ? onManualRevert?.(r.test_id) : onManualPass?.(r.test_id); }}
+                          className={`text-[10px] px-2 py-0.5 rounded-full font-bold border transition-colors ${
+                            r.manually_passed
+                              ? "bg-amber-500/10 text-amber-600 border-amber-500/30 hover:bg-amber-500/20"
+                              : "border-[var(--color-outline)] text-[var(--color-on-surface-variant)] hover:bg-secondary/10 hover:text-secondary hover:border-secondary/30"
+                          }`}
+                        >
+                          {r.manually_passed ? "Revert" : "Pass"}
+                        </button>
+                      )}
                     </div>
                     {r.reasoning && (
                       <p className="text-xs text-[var(--color-on-surface-variant)] pl-8 leading-relaxed">{r.reasoning}</p>
@@ -730,12 +1020,98 @@ function SecurityTab({ data }: { data: PhaseSummary }) {
           </div>
         );
       })}
+
+      {/* ── Garak Adversarial Probes parent accordion ── */}
+      {garakProbeCount > 0 && (
+        <div className="border-2 border-secondary/30 rounded-xl overflow-hidden">
+          <button
+            onClick={() => setGarakExpanded((v) => !v)}
+            className="w-full flex items-center justify-between p-4 hover:bg-secondary/5 transition-colors"
+          >
+            <div className="flex items-center gap-3">
+              <span className={`material-symbols-outlined text-base ${garakVulns === 0 ? "text-secondary" : "text-error"}`}>
+                {garakVulns === 0 ? "verified_user" : "gpp_bad"}
+              </span>
+              <p className="text-sm font-black">Garak Adversarial Probes</p>
+              <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-secondary/10 text-secondary font-bold uppercase tracking-wider">NVIDIA</span>
+            </div>
+            <div className="flex items-center gap-3">
+              <span className={`text-xs font-bold px-2 py-0.5 rounded-full ${garakVulns === 0 ? "badge-pass" : "badge-fail"}`}>
+                {garakPassed}/{garakProbeCount} probes blocked
+              </span>
+              <span className="material-symbols-outlined text-base text-[var(--color-on-surface-variant)]">
+                {garakExpanded ? "expand_less" : "expand_more"}
+              </span>
+            </div>
+          </button>
+          {garakExpanded && (
+            <div className="divide-y divide-secondary/10">
+              {Object.entries(garakByProbe).map(([probeKey, probeResults]) => {
+                const probePassed  = probeResults.filter((r) => r.passed).length;
+                const probeTotal   = probeResults.length;
+                const isProbeOpen  = garakProbeExpanded.has(probeKey);
+                const allResisted  = probePassed === probeTotal;
+                return (
+                  <div key={probeKey}>
+                    <button
+                      onClick={() => toggleGarakProbe(probeKey)}
+                      className="w-full flex items-center justify-between px-4 py-3 hover:bg-secondary/5 transition-colors"
+                    >
+                      <div className="flex items-center gap-2">
+                        <span className={`material-symbols-outlined text-sm ${allResisted ? "text-secondary" : "text-error"}`}>
+                          {allResisted ? "shield" : "security_update_warning"}
+                        </span>
+                        <p className="text-xs font-semibold">{metricLabel(probeKey)}</p>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${allResisted ? "badge-pass" : "badge-fail"}`}>
+                          {probePassed}/{probeTotal} blocked
+                        </span>
+                        <span className="material-symbols-outlined text-sm text-[var(--color-on-surface-variant)]">
+                          {isProbeOpen ? "expand_less" : "expand_more"}
+                        </span>
+                      </div>
+                    </button>
+                    {isProbeOpen && (
+                      <div className="px-4 pb-3 space-y-3 bg-[var(--color-surface-container-low)]">
+                        {probeResults[0]?.reasoning && (
+                          <p className="text-xs text-[var(--color-on-surface-variant)] leading-relaxed">
+                            {probeResults[0].reasoning}
+                          </p>
+                        )}
+                        {probeResults.map((r, idx) => (
+                          <div key={r.test_id} className="space-y-1.5">
+                            <div className="flex items-center gap-1.5">
+                              <span className={`material-symbols-outlined text-xs ${r.passed ? "text-secondary" : "text-error"}`}>
+                                {r.passed ? "shield" : "security_update_warning"}
+                              </span>
+                              <p className={`text-[10px] font-bold uppercase tracking-wider ${r.passed ? "text-secondary" : "text-error"}`}>
+                                Prompt {idx + 1} {r.passed ? "Resisted" : "Not Resisted"}
+                              </p>
+                            </div>
+                            <ConversationBlock
+                              input={r.input_text}
+                              output={r.output_text}
+                              inputLabel="Attack Prompt"
+                              outputLabel="AI Response"
+                            />
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
 
 // ─────────────────────── Quality Tab ──────────────────────────────────────
-function QualityTab({ data }: { data: PhaseSummary }) {
+function QualityTab({ data, onManualPass, onManualRevert }: { data: PhaseSummary; onManualPass?: (id: string) => void; onManualRevert?: (id: string) => void }) {
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   if (!data?.results) return <EmptyState />;
 
@@ -748,15 +1124,26 @@ function QualityTab({ data }: { data: PhaseSummary }) {
           { label: "Total", value: data.total },
           { label: "Passed", value: data.passed, color: "text-secondary" },
           { label: "Failed", value: data.failed, color: "text-error" },
-          { label: "Avg Score", value: `${(data.avg_score * 100).toFixed(1)}%` },
+          { label: "Skipped", value: data.skipped ?? 0, color: (data.skipped ?? 0) > 0 ? "text-[#855300]" : undefined },
         ]}
       />
 
+      {(data.evaluation_warnings?.length ?? 0) > 0 && (
+        <div className="space-y-2">
+          {data.evaluation_warnings!.map((w, i) => (
+            <div key={i} className="flex items-start gap-2 p-3 rounded-xl border border-[#855300]/30 bg-[#855300]/5">
+              <span className="material-symbols-outlined text-base text-[#855300] flex-shrink-0 mt-0.5">warning</span>
+              <p className="text-xs text-[#855300] leading-relaxed">{w}</p>
+            </div>
+          ))}
+        </div>
+      )}
+
       {data.results.map((r) => (
         <div key={r.test_id} className="border border-[var(--color-outline-variant)] rounded-xl overflow-hidden">
-          <button
+          <div
             onClick={() => toggle(r.test_id)}
-            className="w-full flex items-center justify-between p-4 hover:bg-[var(--color-surface-container-low)] transition-colors"
+            className="w-full flex items-center justify-between p-4 hover:bg-[var(--color-surface-container-low)] transition-colors cursor-pointer"
           >
             <div className="flex items-center gap-3">
               <span className={`material-symbols-outlined text-base ${r.passed ? "text-secondary" : "text-error"}`}>
@@ -768,11 +1155,23 @@ function QualityTab({ data }: { data: PhaseSummary }) {
               <span className={`text-xs font-black ${r.passed ? "text-secondary" : "text-error"}`}>
                 {(r.score * 100).toFixed(0)}%
               </span>
+              {(onManualPass || onManualRevert) && (
+                <button
+                  onClick={e => { e.stopPropagation(); r.manually_passed ? onManualRevert?.(r.test_id) : onManualPass?.(r.test_id); }}
+                  className={`text-[10px] px-2 py-0.5 rounded-full font-bold border transition-colors ${
+                    r.manually_passed
+                      ? "bg-amber-500/10 text-amber-600 border-amber-500/30 hover:bg-amber-500/20"
+                      : "border-[var(--color-outline)] text-[var(--color-on-surface-variant)] hover:bg-secondary/10 hover:text-secondary hover:border-secondary/30"
+                  }`}
+                >
+                  {r.manually_passed ? "Revert" : "Pass"}
+                </button>
+              )}
               <span className="material-symbols-outlined text-base text-[var(--color-on-surface-variant)]">
                 {expanded.has(r.test_id) ? "expand_less" : "expand_more"}
               </span>
             </div>
-          </button>
+          </div>
           {expanded.has(r.test_id) && (
             <div className="px-4 pb-4 space-y-3 border-t border-[var(--color-outline-variant)]">
               <ConversationBlock input={r.input_text} output={r.output_text} inputLabel="Question" outputLabel="Response" />
@@ -824,7 +1223,7 @@ function QualityTab({ data }: { data: PhaseSummary }) {
 }
 
 // ─────────────────────── RAG Tab ──────────────────────────────────────────
-function RAGTab({ data }: { data: PhaseSummary }) {
+function RAGTab({ data, onManualPass, onManualRevert }: { data: PhaseSummary; onManualPass?: (id: string) => void; onManualRevert?: (id: string) => void }) {
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   if (!data?.results) return <EmptyState />;
 
@@ -877,9 +1276,9 @@ function RAGTab({ data }: { data: PhaseSummary }) {
       <div className="space-y-3">
         {data.results.map((r) => (
           <div key={r.test_id} className="border border-[var(--color-outline-variant)] rounded-xl overflow-hidden">
-            <button
+            <div
               onClick={() => toggle(r.test_id)}
-              className="w-full flex items-center justify-between p-4 hover:bg-[var(--color-surface-container-low)] transition-colors"
+              className="w-full flex items-center justify-between p-4 hover:bg-[var(--color-surface-container-low)] transition-colors cursor-pointer"
             >
               <div className="flex items-center gap-3 min-w-0">
                 <span className={`material-symbols-outlined text-base flex-shrink-0 ${r.passed ? "text-secondary" : "text-error"}`}>
@@ -892,11 +1291,23 @@ function RAGTab({ data }: { data: PhaseSummary }) {
               </div>
               <div className="flex items-center gap-2 flex-shrink-0">
                 <span className={`text-xs font-black ${r.passed ? "text-secondary" : "text-error"}`}>{(r.score * 100).toFixed(0)}%</span>
+                {(onManualPass || onManualRevert) && (
+                  <button
+                    onClick={e => { e.stopPropagation(); r.manually_passed ? onManualRevert?.(r.test_id) : onManualPass?.(r.test_id); }}
+                    className={`text-[10px] px-2 py-0.5 rounded-full font-bold border transition-colors ${
+                      r.manually_passed
+                        ? "bg-amber-500/10 text-amber-600 border-amber-500/30 hover:bg-amber-500/20"
+                        : "border-[var(--color-outline)] text-[var(--color-on-surface-variant)] hover:bg-secondary/10 hover:text-secondary hover:border-secondary/30"
+                    }`}
+                  >
+                    {r.manually_passed ? "Revert" : "Pass"}
+                  </button>
+                )}
                 <span className="material-symbols-outlined text-base text-[var(--color-on-surface-variant)]">
                   {expanded.has(r.test_id) ? "expand_less" : "expand_more"}
                 </span>
               </div>
-            </button>
+            </div>
             {expanded.has(r.test_id) && (
               <div className="px-4 pb-4 space-y-3 border-t border-[var(--color-outline-variant)]">
                 <ConversationBlock input={r.input_text} output={r.output_text} inputLabel="Question" outputLabel="RAG Answer" />
@@ -929,133 +1340,6 @@ function RAGTab({ data }: { data: PhaseSummary }) {
   );
 }
 
-// ─────────────────────── RCA Tab ──────────────────────────────────────────
-function RCATab({ data }: { data: RCAReport }) {
-  if (!data?.top_causes?.length) return <EmptyState />;
-
-  const CAT_COLORS: Record<string, { bg: string; text: string }> = {
-    C1: { bg: "bg-purple-100",  text: "text-purple-700"  },
-    C2: { bg: "bg-blue-100",    text: "text-blue-700"    },
-    C3: { bg: "bg-orange-100",  text: "text-orange-700"  },
-    C4: { bg: "bg-red-100",     text: "text-red-700"     },
-    C5: { bg: "bg-green-100",   text: "text-green-700"   },
-    C6: { bg: "bg-yellow-100",  text: "text-yellow-700"  },
-    C7: { bg: "bg-fuchsia-100", text: "text-fuchsia-700" },
-    C8: { bg: "bg-slate-100",   text: "text-slate-700"   },
-  };
-
-  const arch = data.architecture_summary as Record<string, unknown>;
-
-  return (
-    <div className="space-y-6">
-      {/* Summary stats */}
-      <SummaryRow4
-        items={[
-          { label: "Failures Mapped",    value: data.total_failed },
-          { label: "Results Analysed",   value: data.total_analyzed },
-          { label: "Relevant FP",        value: data.relevant_points },
-          { label: "Filtered Out",       value: data.filtered_points },
-        ]}
-      />
-
-      {/* Architecture profile */}
-      <div className="p-4 rounded-xl bg-[var(--color-surface-container-low)] space-y-2">
-        <p className="text-[10px] font-black uppercase tracking-widest text-[var(--color-on-surface-variant)] opacity-60">Architecture Profile Used</p>
-        <div className="flex flex-wrap gap-2">
-          {[
-            ["App Type",        arch.application_type as string],
-            ["Deployment",      arch.deployment_type as string],
-            ["Vector DB",       (arch.vector_db as string) || "none"],
-            ["Session DB",      (arch.session_db as string) || "none"],
-            ["Rate Limiting",   arch.has_rate_limiting ? "yes" : "no"],
-            ["Retry Logic",     arch.has_retry_logic ? "yes" : "no"],
-            ["Circuit Breaker", arch.has_circuit_breaker ? "yes" : "no"],
-          ].map(([label, val]) => {
-            const ok = !["no","none","unknown"].includes(String(val).toLowerCase());
-            return (
-              <span key={label} className={`text-[11px] font-semibold px-2.5 py-1 rounded-full ${ok ? "bg-secondary/10 text-secondary" : "bg-error/10 text-error"}`}>
-                {label}: {val}
-              </span>
-            );
-          })}
-        </div>
-      </div>
-
-      {/* Observed signals */}
-      {Object.keys(data.signal_summary).length > 0 && (
-        <div className="p-4 rounded-xl bg-[var(--color-surface-container-low)] space-y-2">
-          <p className="text-[10px] font-black uppercase tracking-widest text-[var(--color-on-surface-variant)] opacity-60">Observed Failure Signals</p>
-          <div className="flex flex-wrap gap-2">
-            {Object.entries(data.signal_summary)
-              .sort(([, a], [, b]) => b - a)
-              .map(([key, count]) => (
-                <span key={key} className="text-[11px] font-semibold px-2.5 py-1 rounded-full bg-[#855300]/10 text-[#855300]">
-                  {key.replace(/_/g, " ")} ({count})
-                </span>
-              ))}
-          </div>
-        </div>
-      )}
-
-      {/* Root cause cards */}
-      <div className="space-y-3">
-        <p className="text-[10px] font-black uppercase tracking-widest text-[var(--color-on-surface-variant)] opacity-60">Top Probable Root Causes</p>
-        {data.top_causes.map((cause) => {
-          const pct = Math.round(cause.probability * 100);
-          const isHigh   = pct >= 70;
-          const isMedium = pct >= 45 && pct < 70;
-          const probColor = isHigh ? "text-error" : isMedium ? "text-[#855300]" : "text-primary";
-          const probBg    = isHigh ? "bg-error/10" : isMedium ? "bg-[#855300]/10" : "bg-primary/10";
-          const probLabel = isHigh ? "HIGH" : isMedium ? "MEDIUM" : "LOW";
-          const cat = CAT_COLORS[cause.category_id] ?? { bg: "bg-slate-100", text: "text-slate-700" };
-
-          return (
-            <div key={cause.id} className="border border-[var(--color-outline-variant)] rounded-xl p-4">
-              <div className="flex items-start gap-3">
-                {/* Left: details */}
-                <div className="flex-1 min-w-0 space-y-2">
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <span className="text-xs font-black text-[var(--color-on-surface-variant)] opacity-50">#{cause.rank}</span>
-                    <span className={`text-[11px] font-bold px-2 py-0.5 rounded-full ${cat.bg} ${cat.text}`}>{cause.category}</span>
-                    <span className="text-[10px] font-mono text-[var(--color-on-surface-variant)] opacity-50">{cause.id}</span>
-                  </div>
-                  <p className="text-sm font-black text-[var(--color-on-surface)]">{cause.label}</p>
-
-                  {cause.evidence.slice(0, 3).map((e, i) => (
-                    <div key={i} className="flex items-start gap-1.5">
-                      <span className="material-symbols-outlined text-xs text-[#855300] mt-0.5 flex-shrink-0">arrow_right</span>
-                      <p className="text-xs text-[var(--color-on-surface-variant)]">{e}</p>
-                    </div>
-                  ))}
-
-                  {cause.reason && (
-                    <div className="p-2.5 rounded-lg bg-[var(--color-surface-container-low)] border-l-2 border-[var(--color-outline-variant)]">
-                      <p className="text-xs text-[var(--color-on-surface-variant)] leading-relaxed">{cause.reason}</p>
-                    </div>
-                  )}
-
-                  <div className="flex items-start gap-1.5 p-2 rounded-lg bg-secondary/5 border border-secondary/20">
-                    <span className="material-symbols-outlined text-xs text-secondary mt-0.5 flex-shrink-0">build</span>
-                    <p className="text-xs text-secondary font-medium">{cause.remediation}</p>
-                  </div>
-                </div>
-
-                {/* Right: probability */}
-                <div className={`flex-shrink-0 flex flex-col items-center gap-1 px-3 py-2 rounded-xl ${probBg}`}>
-                  <span className={`font-headline text-2xl font-black ${probColor}`}>{pct}%</span>
-                  <span className={`text-[9px] font-black tracking-widest ${probColor}`}>{probLabel}</span>
-                  <div className="w-12 h-1.5 bg-[var(--color-outline-variant)] rounded-full overflow-hidden">
-                    <div className={`h-full rounded-full ${isHigh ? "bg-error" : isMedium ? "bg-[#855300]" : "bg-primary"}`} style={{ width: `${pct}%` }} />
-                  </div>
-                </div>
-              </div>
-            </div>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
 
 // ─────────────────────── Performance Tab ──────────────────────────────────
 function PerformanceTab({ data }: { data: PerformanceMetrics }) {
@@ -1150,11 +1434,11 @@ function LoadTab({ data }: { data: LoadMetrics }) {
 }
 
 // ─────────────────────── Shared mini-components ────────────────────────────
-function TestResultRow({ result }: { result: TestResult }) {
+function TestResultRow({ result, onManualPass, onManualRevert }: { result: TestResult; onManualPass?: (id: string) => void; onManualRevert?: (id: string) => void }) {
   const [open, setOpen] = useState(false);
   return (
     <div className="border-t border-[var(--color-outline-variant)] first:border-0">
-      <button onClick={() => setOpen(!open)} className="w-full flex items-center justify-between p-3 hover:bg-[var(--color-surface-container-low)] transition-colors text-left gap-3">
+      <div onClick={() => setOpen(!open)} className="w-full flex items-center justify-between p-3 hover:bg-[var(--color-surface-container-low)] transition-colors text-left gap-3 cursor-pointer">
         <div className="flex items-center gap-3 min-w-0">
           <span className={`material-symbols-outlined text-sm flex-shrink-0 ${result.passed ? "text-secondary" : "text-error"}`}>
             {result.passed ? "check_circle" : "cancel"}
@@ -1164,9 +1448,21 @@ function TestResultRow({ result }: { result: TestResult }) {
         <div className="flex items-center gap-2 flex-shrink-0">
           <span className="text-xs text-[var(--color-on-surface-variant)] opacity-60">{result.latency_ms.toFixed(0)}ms</span>
           <span className={`text-xs font-black ${result.passed ? "text-secondary" : "text-error"}`}>{(result.score * 100).toFixed(0)}%</span>
+          {(onManualPass || onManualRevert) && (
+            <button
+              onClick={e => { e.stopPropagation(); result.manually_passed ? onManualRevert?.(result.test_id) : onManualPass?.(result.test_id); }}
+              className={`text-[10px] px-2 py-0.5 rounded-full font-bold border transition-colors ${
+                result.manually_passed
+                  ? "bg-amber-500/10 text-amber-600 border-amber-500/30 hover:bg-amber-500/20"
+                  : "border-[var(--color-outline)] text-[var(--color-on-surface-variant)] hover:bg-secondary/10 hover:text-secondary hover:border-secondary/30"
+              }`}
+            >
+              {result.manually_passed ? "Revert" : "Pass"}
+            </button>
+          )}
           <span className="material-symbols-outlined text-sm text-[var(--color-on-surface-variant)]">{open ? "expand_less" : "expand_more"}</span>
         </div>
-      </button>
+      </div>
       {open && (
         <div className="px-4 pb-3 space-y-2">
           <ConversationBlock input={result.input_text} output={result.output_text} />
@@ -1198,13 +1494,13 @@ function ConversationBlock({
 }: { input: string; output: string; inputLabel?: string; outputLabel?: string }) {
   return (
     <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-      <div className="p-3 rounded-lg bg-[var(--color-surface-container-low)]">
-        <p className="text-[10px] font-bold uppercase tracking-wider text-[var(--color-on-surface-variant)] opacity-60 mb-1">{inputLabel}</p>
-        <p className="text-xs font-mono break-all">{input || "—"}</p>
+      <div className="p-3 rounded-lg bg-[var(--color-surface-container-low)] flex flex-col">
+        <p className="text-[10px] font-bold uppercase tracking-wider text-[var(--color-on-surface-variant)] opacity-60 mb-1 flex-shrink-0">{inputLabel}</p>
+        <div className="overflow-y-auto max-h-64 text-xs font-mono whitespace-pre-wrap break-words">{input || "—"}</div>
       </div>
-      <div className="p-3 rounded-lg bg-[var(--color-surface-container-low)]">
-        <p className="text-[10px] font-bold uppercase tracking-wider text-[var(--color-on-surface-variant)] opacity-60 mb-1">{outputLabel}</p>
-        <p className="text-xs break-all">{output || "—"}</p>
+      <div className="p-3 rounded-lg bg-[var(--color-surface-container-low)] flex flex-col">
+        <p className="text-[10px] font-bold uppercase tracking-wider text-[var(--color-on-surface-variant)] opacity-60 mb-1 flex-shrink-0">{outputLabel}</p>
+        <div className="overflow-y-auto max-h-64 text-xs whitespace-pre-wrap break-words">{output || "—"}</div>
       </div>
     </div>
   );
@@ -1256,6 +1552,189 @@ function EmptyState() {
     <div className="py-12 text-center space-y-2">
       <span className="material-symbols-outlined text-3xl text-[var(--color-on-surface-variant)] opacity-30">data_usage</span>
       <p className="text-sm text-[var(--color-on-surface-variant)] opacity-50">No data available for this phase.</p>
+    </div>
+  );
+}
+
+// ─────────────────────── LLMOps Tab ────────────────────────────────────────
+const STAGE_LABELS: Record<string, string> = {
+  s0: "S0 Profile",
+  s1: "S1 Personas",
+  s2: "S2 Test Gen",
+  s3: "S3 Execution",
+  s4: "S4 Eval",
+  s5: "S5 Aggregate",
+  s7: "S7 Report",
+  s8: "S8 RCA",
+  unknown: "Other",
+};
+
+function LLMOpsTab({ data }: { data: TokenSummary | null }) {
+  const mlflowUrl = process.env.NEXT_PUBLIC_MLFLOW_URL;
+
+  if (!data || data.total_tokens === 0) {
+    return (
+      <div className="py-16 text-center space-y-3">
+        <span className="material-symbols-outlined text-4xl text-[var(--color-on-surface-variant)] opacity-30">monitoring</span>
+        <p className="text-sm font-semibold text-[var(--color-on-surface-variant)] opacity-60">No LLM usage data available</p>
+        <p className="text-xs text-[var(--color-on-surface-variant)] opacity-40">Set MLFLOW_TRACKING_URI on the backend to enable token tracking.</p>
+      </div>
+    );
+  }
+
+  const {
+    total_calls, total_prompt_tokens, total_completion_tokens, total_tokens,
+    avg_latency_ms, tpot_ms = 0, token_efficiency_ratio = 0, tpm_velocity = 0,
+    retry_count = 0, truncated_calls = 0, truncation_rate = 0,
+    models_used = {}, by_stage,
+  } = data;
+
+  const stageEntries = Object.entries(by_stage).sort((a, b) => b[1].total_tokens - a[1].total_tokens);
+  const maxStageTokens = stageEntries[0]?.[1].total_tokens || 1;
+  const promptPct = total_tokens > 0 ? Math.round((total_prompt_tokens / total_tokens) * 100) : 0;
+
+  const modelEntries = Object.entries(models_used).sort((a, b) => b[1] - a[1]);
+
+  return (
+    <div className="space-y-8">
+
+      {/* Row 1 — Token counts */}
+      <div>
+        <p className="text-xs font-bold uppercase tracking-widest text-[var(--color-on-surface-variant)] opacity-60 mb-3">Token Counts</p>
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+          {[
+            { label: "LLM Calls",        value: total_calls.toLocaleString(),                    color: "text-primary" },
+            { label: "Input Tokens",      value: total_prompt_tokens.toLocaleString(),            color: "text-[var(--color-on-surface)]" },
+            { label: "Output Tokens",     value: total_completion_tokens.toLocaleString(),        color: "text-[var(--color-on-surface)]" },
+            { label: "Total Tokens",      value: total_tokens.toLocaleString(),                   color: "text-secondary" },
+          ].map(c => (
+            <div key={c.label} className="p-4 rounded-xl bg-[var(--color-surface-container-low)] text-center">
+              <p className={`font-headline text-2xl font-black ${c.color}`}>{c.value}</p>
+              <p className="text-xs text-[var(--color-on-surface-variant)] opacity-60 mt-0.5">{c.label}</p>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Row 2 — Performance metrics */}
+      <div>
+        <p className="text-xs font-bold uppercase tracking-widest text-[var(--color-on-surface-variant)] opacity-60 mb-3">Performance</p>
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+          {[
+            { label: "Avg Call Latency",   value: avg_latency_ms > 0 ? `${avg_latency_ms.toFixed(0)}ms` : "—",   color: "text-[#855300]",
+              tip: "Average latency of METRON's internal LLM calls — not the target AI's response time" },
+            { label: "TPOT",              value: tpot_ms > 0 ? `${tpot_ms.toFixed(1)}ms/tok` : "—",            color: "text-[#855300]",
+              tip: "Time Per Output Token — total latency ÷ total output tokens" },
+            { label: "TPM Velocity",      value: tpm_velocity > 0 ? `${tpm_velocity.toFixed(0)}/min` : "—",    color: "text-primary",
+              tip: "Tokens processed per minute over the full pipeline run" },
+            { label: "Token Efficiency",  value: token_efficiency_ratio > 0 ? token_efficiency_ratio.toFixed(3) : "—", color: "text-secondary",
+              tip: "Output tokens ÷ Input tokens — higher = more output per prompt" },
+          ].map(c => (
+            <div key={c.label} className="p-4 rounded-xl bg-[var(--color-surface-container-low)] text-center" title={"tip" in c ? c.tip : undefined}>
+              <p className={`font-headline text-2xl font-black ${c.color}`}>{c.value}</p>
+              <p className="text-xs text-[var(--color-on-surface-variant)] opacity-60 mt-0.5">{c.label}</p>
+              {c.label === "Avg Call Latency" && (
+                <p className="text-[10px] text-[var(--color-on-surface-variant)] opacity-35 mt-0.5">METRON internal calls</p>
+              )}
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Row 3 — Reliability */}
+      <div>
+        <p className="text-xs font-bold uppercase tracking-widest text-[var(--color-on-surface-variant)] opacity-60 mb-3">Reliability</p>
+        <div className="grid grid-cols-2 gap-4">
+          <div className="p-4 rounded-xl bg-[var(--color-surface-container-low)] flex items-center gap-4">
+            <span className="material-symbols-outlined text-3xl text-[var(--color-on-surface-variant)] opacity-40">content_cut</span>
+            <div>
+              <p className="font-headline text-xl font-black text-[var(--color-on-surface)]">
+                {(truncation_rate * 100).toFixed(1)}%
+                <span className="text-sm font-normal opacity-60 ml-1">({truncated_calls} calls)</span>
+              </p>
+              <p className="text-xs text-[var(--color-on-surface-variant)] opacity-60">Truncation Rate</p>
+              <p className="text-[11px] text-[var(--color-on-surface-variant)] opacity-40 mt-0.5">Calls where max token limit was hit</p>
+            </div>
+          </div>
+          <div className="p-4 rounded-xl bg-[var(--color-surface-container-low)] flex items-center gap-4">
+            <span className="material-symbols-outlined text-3xl text-[var(--color-on-surface-variant)] opacity-40">replay</span>
+            <div>
+              <p className="font-headline text-xl font-black text-[var(--color-on-surface)]">{retry_count}</p>
+              <p className="text-xs text-[var(--color-on-surface-variant)] opacity-60">Retry Count</p>
+              <p className="text-[11px] text-[var(--color-on-surface-variant)] opacity-40 mt-0.5">Rate-limit backoffs + timeout retries</p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Row 4 — Token breakdown by stage */}
+      {stageEntries.length > 0 && (
+        <div className="space-y-3">
+          <p className="text-xs font-bold uppercase tracking-widest text-[var(--color-on-surface-variant)] opacity-60">Token Breakdown by Stage</p>
+          <div className="space-y-2">
+            {stageEntries.map(([stage, s]) => {
+              const barPct = Math.round((s.total_tokens / maxStageTokens) * 100);
+              return (
+                <div key={stage} className="flex items-center gap-3">
+                  <span className="text-xs font-mono w-24 shrink-0 text-[var(--color-on-surface-variant)]">
+                    {STAGE_LABELS[stage as keyof typeof STAGE_LABELS] ?? stage}
+                  </span>
+                  <div className="flex-1 h-5 rounded-full bg-[var(--color-surface-container-low)] overflow-hidden">
+                    <ProgressFill pct={barPct} className="h-full rounded-full bg-primary opacity-70 transition-all" />
+                  </div>
+                  <span className="text-xs text-[var(--color-on-surface-variant)] opacity-70 w-40 shrink-0 text-right">
+                    {s.calls} calls · {s.total_tokens.toLocaleString()} tokens
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* Row 5 — Input vs Output split */}
+      {(total_prompt_tokens > 0 || total_completion_tokens > 0) && (
+        <div className="space-y-2">
+          <p className="text-xs font-bold uppercase tracking-widest text-[var(--color-on-surface-variant)] opacity-60">Input vs Output Tokens</p>
+          <div className="h-5 rounded-full overflow-hidden flex">
+            <ProgressFill pct={promptPct} className="h-full bg-primary opacity-70" />
+            <div className="h-full bg-secondary opacity-50 flex-1" />
+          </div>
+          <div className="flex justify-between text-xs text-[var(--color-on-surface-variant)] opacity-60">
+            <span>Input: {total_prompt_tokens.toLocaleString()} ({promptPct}%)</span>
+            <span>Output: {total_completion_tokens.toLocaleString()} ({100 - promptPct}%)</span>
+          </div>
+        </div>
+      )}
+
+      {/* Row 6 — Models used */}
+      {modelEntries.length > 0 && (
+        <div className="space-y-3">
+          <p className="text-xs font-bold uppercase tracking-widest text-[var(--color-on-surface-variant)] opacity-60">Models Used</p>
+          <div className="flex flex-wrap gap-2">
+            {modelEntries.map(([model, calls]) => (
+              <span
+                key={model}
+                className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-mono bg-[var(--color-surface-container-low)] text-[var(--color-on-surface-variant)]"
+              >
+                <span className="w-1.5 h-1.5 rounded-full bg-primary opacity-70 shrink-0" />
+                {model}
+                <span className="opacity-50 ml-0.5">· {calls} calls</span>
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Footer */}
+      {mlflowUrl && (
+        <p className="text-xs text-[var(--color-on-surface-variant)] opacity-50 text-center">
+          Full per-call traces available in{" "}
+          <a href={mlflowUrl} target="_blank" rel="noopener noreferrer" className="underline hover:opacity-100">
+            MLflow UI ↗
+          </a>
+        </p>
+      )}
     </div>
   );
 }

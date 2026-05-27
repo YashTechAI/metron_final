@@ -21,6 +21,7 @@ class AdapterResponse:
     retrieved_context: Optional[List[str]] = None
     agent_trace:       Optional[List[Dict]] = None
     error:             Optional[str] = None
+    raw_data:          Optional[Dict] = None
 
     @property
     def ok(self) -> bool:
@@ -44,6 +45,7 @@ class ChatbotAdapter:
         timeout:              int = 30,
         request_template:     Optional[str] = None,
         response_trim_marker: Optional[str] = None,
+        session_mode:         str = "session_id",
     ):
         self.endpoint_url         = endpoint_url
         self.request_field        = request_field
@@ -51,11 +53,26 @@ class ChatbotAdapter:
         self.timeout              = timeout
         self.request_template     = request_template
         self.response_trim_marker = response_trim_marker
+        self.session_mode         = session_mode
         self.headers: Dict[str, str] = {"Content-Type": "application/json"}
         if auth_type == "bearer" and auth_token:
             self.headers["Authorization"] = f"Bearer {auth_token}"
 
-    def _build_payload(self, message: str, conversation_id: str) -> dict:
+    def _build_payload(
+        self,
+        message: str,
+        conversation_id: str,
+        history: Optional[List[Dict]] = None,
+    ) -> dict:
+        history = history or []
+        mode = self.session_mode
+
+        # messages_array: build OpenAI-style list; template is irrelevant in this mode.
+        if mode == "messages_array":
+            messages = list(history)   # [{"role": "user"/"assistant", "content": "..."}]
+            messages.append({"role": "user", "content": message})
+            return {self.request_field: messages}
+
         if self.request_template:
             # json.dumps escapes newlines, tabs, quotes etc; strip outer quotes to get bare escaped string
             escaped = json.dumps(message)[1:-1]
@@ -65,8 +82,25 @@ class ChatbotAdapter:
                 .replace("{{uuid}}", str(_uuid_mod.uuid4()))
                 .replace("{{conversation_id}}", conversation_id or str(_uuid_mod.uuid4()))
             )
+            if mode == "history_injection" and "{{history}}" in body_str:
+                # Escape the history string so it safely embeds inside the JSON template.
+                history_escaped = json.dumps(self._build_history_string(history))[1:-1]
+                body_str = body_str.replace("{{history}}", history_escaped)
             return json.loads(body_str)
+
+        # No template — plain single-field payload.
+        if mode == "history_injection" and history:
+            history_str = self._build_history_string(history)
+            return {self.request_field: f"{history_str}\nUser: {message}"}
         return {self.request_field: message}
+
+    @staticmethod
+    def _build_history_string(history: List[Dict]) -> str:
+        lines = []
+        for turn in history:
+            role = "User" if turn.get("role") == "user" else "Assistant"
+            lines.append(f"{role}: {turn.get('content', '')}")
+        return "\n".join(lines)
 
     def _trim_response(self, text: str) -> str:
         if self.response_trim_marker and self.response_trim_marker in text:
@@ -79,7 +113,7 @@ class ChatbotAdapter:
         history: Optional[List] = None,
         conversation_id: str = "",
     ) -> AdapterResponse:
-        payload = self._build_payload(message, conversation_id)
+        payload = self._build_payload(message, conversation_id, history)
         start = time.monotonic()
         try:
             async with aiohttp.ClientSession() as session:
@@ -94,11 +128,14 @@ class ChatbotAdapter:
                         return AdapterResponse("", latency, error=f"HTTP {resp.status}")
                     data = await resp.json(content_type=None)
                     text = self._trim_response(self._extract(data, self.response_field))
-                    # Extraction errors go into the error field so evaluators
-                    # never receive internal sentinel strings as real responses.
-                    if text.startswith(("[Field ", "[Index ", "[Empty")):
-                        return AdapterResponse("", latency, error=text)
-                    return AdapterResponse(text, latency)
+                    # If configured path fails, try A2A protocol auto-detection before giving up.
+                    if text.startswith(("[Field ", "[Index ", "[Empty", "[No item")):
+                        a2a_text = self._try_extract_a2a(data)
+                        if a2a_text:
+                            text = self._trim_response(a2a_text)
+                        else:
+                            return AdapterResponse("", latency, error=text, raw_data=data)
+                    return AdapterResponse(text, latency, raw_data=data)
         except aiohttp.ClientConnectorError as e:
             latency = (time.monotonic() - start) * 1000
             return AdapterResponse("", latency, error=f"Connection refused: {e}")
@@ -110,6 +147,12 @@ class ChatbotAdapter:
         resp = await self.send("Hello, this is a connectivity test.")
         if resp.ok:
             return True, f"Connected. Latency: {resp.latency_ms:.0f}ms"
+        # A2A protocol: endpoint returns {"result": {"status": {"state": "..."}}} even
+        # when artifacts aren't present (e.g. state="input-required" for a greeting).
+        # The endpoint is live — extraction failing on the test message is expected.
+        if resp.raw_data and "result" in resp.raw_data:
+            state = (resp.raw_data["result"].get("status") or {}).get("state", "responded")
+            return True, f"Connected (A2A, state={state}). Latency: {resp.latency_ms:.0f}ms"
         return False, resp.error or "Unknown error"
 
     @staticmethod
@@ -122,6 +165,39 @@ class ChatbotAdapter:
             elif isinstance(result, list) and part.isdigit():
                 idx = int(part)
                 result = result[idx] if 0 <= idx < len(result) else "[Index OOB]"
+            elif isinstance(result, list) and "[" in part and "=" in part:
+                # Array filter syntax: field[key=value] — selects first matching item.
+                # e.g. "parts[type=text]" picks the first part where type == "text".
+                filter_expr = part.split("[", 1)[1].rstrip("]")
+                filter_key, filter_val = filter_expr.split("=", 1)
+                matched = next(
+                    (item for item in result if isinstance(item, dict) and item.get(filter_key) == filter_val),
+                    None,
+                )
+                if matched is not None:
+                    result = matched
+                else:
+                    return f"[No item with {filter_key}={filter_val} in array]"
             else:
                 return f"[Field '{part}' not found]"
         return str(result) if result is not None else "[Empty response]"
+
+    @staticmethod
+    def _try_extract_a2a(data: dict) -> str:
+        """Auto-extract text from an A2A protocol response.
+
+        Walks result.artifacts[].parts[] and returns the first part
+        where type == 'text', regardless of position in the array.
+        This handles mixed-type parts arrays (text + auth, etc.).
+        """
+        try:
+            artifacts = (data.get("result") or {}).get("artifacts") or []
+            for artifact in artifacts:
+                for part in artifact.get("parts") or []:
+                    if isinstance(part, dict) and part.get("type") == "text":
+                        text = part.get("text", "")
+                        if text:
+                            return text
+        except Exception:
+            pass
+        return ""

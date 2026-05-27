@@ -31,10 +31,10 @@ LLM_PROVIDERS: Dict[str, Dict[str, Any]] = {
         "default": "azure/gpt-4o",
         "env_key": "AZURE_OPENAI_API_KEY",
         "endpoint_key": "AZURE_OPENAI_ENDPOINT",
-        "rpm": 600,
-        "tpm": 100000,
-        "description": "Azure GPT-4o | 600 RPM | 100K TPM",
-        "token_optimize": True,   # compact prompts — stay within 100K TPM
+        "rpm": 300,
+        "tpm": 50000,
+        "description": "Azure GPT-4o | 300 RPM | 50K TPM",
+        "token_optimize": True,   # compact prompts — stay within 50K TPM
     },
     "Groq": {
         "prefix": "groq",
@@ -53,7 +53,7 @@ LLM_PROVIDERS: Dict[str, Dict[str, Any]] = {
         "prefix": "gemini",
         "models": {
             "fast":     "gemini/gemini-2.0-flash",
-            "judge":    "gemini/gemini-1.5-pro-latest",
+            "judge":    "gemini/gemini-2.0-flash",
             "balanced": "gemini/gemini-2.0-flash",
         },
         "default": "gemini/gemini-2.0-flash",
@@ -61,6 +61,26 @@ LLM_PROVIDERS: Dict[str, Dict[str, Any]] = {
         "rpm": 60,
         "description": "Fast | 60 RPM | 1M tokens/day free",
         "token_optimize": False,
+    },
+    "AWS Bedrock": {
+        "prefix": "bedrock",
+        "models": {
+            "fast":     "bedrock/anthropic.claude-3-5-haiku-20241022-v1:0",
+            "judge":    "bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0",
+            "balanced": "bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0",
+        },
+        "default": "bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0",
+        "env_key": "AWS_ACCESS_KEY_ID",
+        "rpm": 50,
+        "description": "AWS Bedrock | 50 RPM | Pay per token",
+        "token_optimize": False,
+        "selectable_models": [
+            "anthropic.claude-haiku-4-5-20251001",
+            "anthropic.claude-3-5-haiku-20241022-v1:0",
+            "anthropic.claude-3-5-sonnet-20241022-v2:0",
+            "amazon.nova-pro-v1:0",
+            "amazon.nova-lite-v1:0",
+        ],
     },
 }
 
@@ -106,7 +126,7 @@ HIGH_TRAFFIC_DOMAINS  = {"travel", "ecommerce", "retail", "booking", "support"}
 
 # ── Evaluation thresholds ──────────────────────────────────────────────────
 THRESHOLDS = {
-    "health_score_pass":      0.70,
+    "health_score_pass":      0.50,
     "functional_pass":        0.50,
     "security_pass":          0.50,
     "quality_pass":           0.70,

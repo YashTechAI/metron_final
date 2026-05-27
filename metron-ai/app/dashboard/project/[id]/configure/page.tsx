@@ -23,6 +23,7 @@ interface Provider {
   models: Record<string, string>;
   default: string;
   env_key: string;
+  selectable_models?: string[];
 }
 
 export default function ConfigurePage() {
@@ -38,6 +39,7 @@ export default function ConfigurePage() {
   const [authToken, setAuthToken] = useState("");
   const [requestTemplate, setRequestTemplate] = useState("");
   const [responseTrimMarker, setResponseTrimMarker] = useState("");
+  const [notifyEmail, setNotifyEmail] = useState(false);
   const [connectionStatus, setConnectionStatus] = useState<"idle" | "testing" | "ok" | "fail">("idle");
   const [connectionMsg, setConnectionMsg] = useState("");
 
@@ -64,6 +66,10 @@ export default function ConfigurePage() {
   const [llmProvider, setLlmProvider] = useState("NVIDIA NIM");
   const [llmApiKey, setLlmApiKey] = useState("");
   const [azureEndpoint, setAzureEndpoint] = useState("");
+  const [awsAccessKeyId, setAwsAccessKeyId] = useState("");
+  const [awsSecretAccessKey, setAwsSecretAccessKey] = useState("");
+  const [awsRegion, setAwsRegion] = useState("us-east-1");
+  const [bedrockModelId, setBedrockModelId] = useState("anthropic.claude-haiku-4-5-20251001");
 
   // Security
   const [selectedAttacks, setSelectedAttacks] = useState<string[]>(["jailbreak", "prompt_injection", "pii_extraction", "toxicity", "encoding"]);
@@ -72,7 +78,7 @@ export default function ConfigurePage() {
   // Quality metrics
   const [ragasMetrics, setRagasMetrics] = useState<string[]>(["faithfulness", "answer_relevancy"]);
   const [deepevalMetrics, setDeepevalMetrics] = useState<string[]>(["hallucination", "toxicity"]);
-  const [useGeval, setUseGeval] = useState(false);
+  const [useGeval, setUseGeval] = useState(true);
 
   const [isNavigating, setIsNavigating] = useState(false);
   const [errors, setErrors] = useState<Record<string, string>>({});
@@ -263,6 +269,10 @@ export default function ConfigurePage() {
       llm_provider: llmProvider,
       llm_api_key: llmApiKey,
       azure_endpoint: azureEndpoint,
+      aws_access_key_id: awsAccessKeyId,
+      aws_secret_access_key: awsSecretAccessKey,
+      aws_region: awsRegion,
+      bedrock_model_id: bedrockModelId,
       selected_attacks: selectedAttacks,
       attacks_per_category: attacksPerCategory,
       ragas_metrics: ragasMetrics,
@@ -284,6 +294,7 @@ export default function ConfigurePage() {
       has_caching: hasCaching,
       has_dlq: hasDlq,
       additional_architecture_notes: archNotes,
+      notify_email: notifyEmail,
     };
 
     sessionStorage.setItem(`fullconfig_${projectId}`, JSON.stringify(fullConfig));
@@ -303,6 +314,10 @@ export default function ConfigurePage() {
             llm_provider: llmProvider,
             llm_api_key: llmApiKey,
             azure_endpoint: azureEndpoint,
+            aws_access_key_id: awsAccessKeyId,
+            aws_secret_access_key: awsSecretAccessKey,
+            aws_region: awsRegion,
+            bedrock_model_id: bedrockModelId,
           }),
         });
         if (res.ok) {
@@ -676,7 +691,7 @@ export default function ConfigurePage() {
               <select className="input-field" aria-label="Provider" value={llmProvider} onChange={(e) => setLlmProvider(e.target.value)}>
                 {Object.keys(providers).length > 0
                   ? Object.keys(providers).map((p) => <option key={p}>{p}</option>)
-                  : ["NVIDIA NIM", "Groq", "Google Gemini", "Azure OpenAI"].map((p) => <option key={p}>{p}</option>)}
+                  : ["NVIDIA NIM", "Groq", "Google Gemini", "Azure OpenAI", "AWS Bedrock"].map((p) => <option key={p}>{p}</option>)}
               </select>
             </Field>
             {providerInfo && (
@@ -687,15 +702,17 @@ export default function ConfigurePage() {
             )}
           </div>
           <div className="space-y-4">
-            <Field label="API Key">
-              <input
-                className="input-field"
-                type="password"
-                placeholder="Enter your API key (or set env variable)"
-                value={llmApiKey}
-                onChange={(e) => setLlmApiKey(e.target.value)}
-              />
-            </Field>
+            {llmProvider !== "AWS Bedrock" && (
+              <Field label="API Key">
+                <input
+                  className="input-field"
+                  type="password"
+                  placeholder="Enter your API key (or set env variable)"
+                  value={llmApiKey}
+                  onChange={(e) => setLlmApiKey(e.target.value)}
+                />
+              </Field>
+            )}
             {llmProvider === "Azure OpenAI" && (
               <Field label="Azure Endpoint URL">
                 <input
@@ -707,10 +724,65 @@ export default function ConfigurePage() {
                 />
               </Field>
             )}
-            {providerInfo && (
+            {llmProvider === "AWS Bedrock" && (
+              <>
+                <Field label="AWS Access Key ID">
+                  <input
+                    className="input-field"
+                    type="password"
+                    placeholder="AKIA..."
+                    value={awsAccessKeyId}
+                    onChange={(e) => setAwsAccessKeyId(e.target.value)}
+                  />
+                </Field>
+                <Field label="AWS Secret Access Key">
+                  <input
+                    className="input-field"
+                    type="password"
+                    placeholder="your_secret_key"
+                    value={awsSecretAccessKey}
+                    onChange={(e) => setAwsSecretAccessKey(e.target.value)}
+                  />
+                </Field>
+                <Field label="AWS Region">
+                  <input
+                    className="input-field"
+                    type="text"
+                    placeholder="us-east-1"
+                    value={awsRegion}
+                    onChange={(e) => setAwsRegion(e.target.value)}
+                  />
+                </Field>
+                <Field label="Bedrock Model">
+                  <select
+                    className="input-field"
+                    aria-label="Bedrock Model"
+                    value={bedrockModelId}
+                    onChange={(e) => setBedrockModelId(e.target.value)}
+                  >
+                    {(providers["AWS Bedrock"]?.selectable_models ?? [
+                      "anthropic.claude-haiku-4-5-20251001",
+                      "anthropic.claude-3-5-haiku-20241022-v1:0",
+                      "anthropic.claude-3-5-sonnet-20241022-v2:0",
+                      "amazon.nova-pro-v1:0",
+                      "amazon.nova-lite-v1:0",
+                    ]).map((m) => (
+                      <option key={m} value={m}>{m}</option>
+                    ))}
+                  </select>
+                </Field>
+              </>
+            )}
+            {providerInfo && llmProvider !== "AWS Bedrock" && (
               <div className="p-3 rounded-xl bg-[var(--color-surface-variant)] space-y-1">
                 <p className="text-xs text-[var(--color-on-surface-variant)] opacity-60">Default model</p>
                 <p className="text-xs font-mono font-semibold text-[var(--color-on-surface)]">{providerInfo.default}</p>
+              </div>
+            )}
+            {llmProvider === "AWS Bedrock" && (
+              <div className="p-3 rounded-xl bg-[var(--color-surface-variant)] space-y-1">
+                <p className="text-xs text-[var(--color-on-surface-variant)] opacity-60">Selected model</p>
+                <p className="text-xs font-mono font-semibold text-[var(--color-on-surface)]">bedrock/{bedrockModelId}</p>
               </div>
             )}
           </div>
@@ -762,6 +834,26 @@ export default function ConfigurePage() {
           ))}
         </div>
         <SliderField label="Attack Prompts per Category" min={1} max={50} value={attacksPerCategory} onChange={setAttacksPerCategory} />
+
+        {/* ── Garak Adversarial Probes ──────────────────────────────── */}
+        <div className="pt-4 border-t border-[var(--color-outline-variant)]">
+          <div className="flex items-center gap-2 mb-2">
+            <span className="material-symbols-outlined text-base text-secondary">bug_report</span>
+            <p className="text-sm font-bold text-[var(--color-on-surface)]">Garak Adversarial Probes</p>
+            <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-secondary/10 text-secondary font-bold uppercase tracking-wider">NVIDIA</span>
+          </div>
+          <div className="flex items-center gap-3 p-3 rounded-xl bg-secondary/5 border border-secondary/20">
+            <span className="material-symbols-outlined text-secondary text-xl shrink-0">verified_user</span>
+            <div>
+              <p className="text-xs font-semibold text-[var(--color-on-surface)]">Always runs automatically</p>
+              <p className="text-[10px] text-[var(--color-on-surface-variant)] opacity-70 mt-0.5">
+                17 curated probes — DAN 11.0, STAN, AIM, Developer Mode, Fictional Framing, Grandma Exploit,
+                Instruction Override, System Prompt Extraction, Many-Shot, Base64, ROT13, Hex, Leet, Morse, Zalgo &amp; more.
+                All probes run concurrently.
+              </p>
+            </div>
+          </div>
+        </div>
       </Section>
 
       {/* ── Quality Metrics ────────────────────────────────── */}
@@ -1080,6 +1172,20 @@ export default function ConfigurePage() {
 
       {/* ── Actions ────────────────────────────────────────── */}
       <div className="flex justify-end gap-4 pt-4">
+        {/* Email notification toggle */}
+        <label className="flex items-center gap-3 cursor-pointer select-none">
+          <div
+            onClick={() => setNotifyEmail(v => !v)}
+            className={`relative w-10 h-6 rounded-full transition-colors ${notifyEmail ? "bg-[var(--color-primary)]" : "bg-[var(--color-outline-variant)]"}`}
+          >
+            <span className={`absolute top-1 w-4 h-4 rounded-full bg-white shadow transition-transform ${notifyEmail ? "translate-x-5" : "translate-x-1"}`} />
+          </div>
+          <div>
+            <p className="text-xs font-bold text-[var(--color-on-surface)]">Email me when results are ready</p>
+            <p className="text-[10px] text-[var(--color-on-surface-variant)] opacity-60">HTML report will be attached</p>
+          </div>
+        </label>
+
         <button
           onClick={() => router.push("/dashboard")}
           className="px-6 py-3 rounded-xl border border-[var(--color-outline)] text-sm font-semibold hover:bg-[var(--color-surface-variant)] transition-colors"

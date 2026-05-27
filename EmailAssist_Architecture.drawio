@@ -1,0 +1,189 @@
+<mxGraphModel dx="1422" dy="762" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1654" pageHeight="1169" math="0" shadow="0">
+  <root>
+    <mxCell id="0" />
+    <mxCell id="1" parent="0" />
+
+    <!-- Title -->
+    <mxCell id="title" value="Email Assist Backend — System Architecture"
+      style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=20;fontStyle=1;"
+      vertex="1" parent="1">
+      <mxGeometry x="180" y="10" width="1060" height="38" as="geometry" />
+    </mxCell>
+
+    <!-- ── Section label: External Services ── -->
+    <mxCell id="ext_lbl" value="External Services"
+      style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=11;fontStyle=3;fontColor=#555555;"
+      vertex="1" parent="1">
+      <mxGeometry x="840" y="44" width="545" height="16" as="geometry" />
+    </mxCell>
+
+    <!-- ══════════════════════════════════════
+         TOP ROW — External Services (y=62)
+         No overlap: 200-355 | 840-1005 | 1040-1195 | 1230-1385
+         ══════════════════════════════════════ -->
+
+    <!-- Keycloak OpenID Provider (directly above Middleware) -->
+    <mxCell id="keycloak" value="Keycloak&#xa;OpenID Provider"
+      style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#000000;fontSize=11;"
+      vertex="1" parent="1">
+      <mxGeometry x="200" y="62" width="155" height="55" as="geometry" />
+    </mxCell>
+
+    <!-- LLM Provider (directly above EmailService) -->
+    <mxCell id="llmprovider" value="LLM Provider&#xa;(Gemini / OpenAI)"
+      style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#000000;fontSize=11;"
+      vertex="1" parent="1">
+      <mxGeometry x="840" y="62" width="165" height="55" as="geometry" />
+    </mxCell>
+
+    <!-- Kafka Event Logger -->
+    <mxCell id="kafka" value="Kafka&#xa;Event Logger"
+      style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#000000;fontSize=11;"
+      vertex="1" parent="1">
+      <mxGeometry x="1040" y="62" width="155" height="55" as="geometry" />
+    </mxCell>
+
+    <!-- Tracing Service -->
+    <mxCell id="tracing" value="Tracing Service&#xa;(Opik)"
+      style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#000000;fontSize=11;"
+      vertex="1" parent="1">
+      <mxGeometry x="1230" y="62" width="155" height="55" as="geometry" />
+    </mxCell>
+
+    <!-- ══════════════════════════════════════
+         FastAPI Application background (dashed outline)
+         covers main-row boxes only
+         ══════════════════════════════════════ -->
+    <mxCell id="app_bg" value=""
+      style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fafafa;strokeColor=#aaaaaa;dashed=1;strokeWidth=2;"
+      vertex="1" parent="1">
+      <mxGeometry x="190" y="184" width="845" height="88" as="geometry" />
+    </mxCell>
+
+    <mxCell id="app_lbl" value="FastAPI Application"
+      style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;whiteSpace=wrap;rounded=0;fontSize=10;fontStyle=2;fontColor=#777777;"
+      vertex="1" parent="1">
+      <mxGeometry x="196" y="187" width="160" height="15" as="geometry" />
+    </mxCell>
+
+    <!-- ══════════════════════════════════════
+         MIDDLE ROW — Main Flow (y=200)
+         No overlap: 40-150 | 200-355 | 400-575 | 630-785 | 840-1005
+         ══════════════════════════════════════ -->
+
+    <!-- Client -->
+    <mxCell id="client" value="Client"
+      style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#000000;fontSize=12;fontStyle=1;"
+      vertex="1" parent="1">
+      <mxGeometry x="40" y="200" width="110" height="55" as="geometry" />
+    </mxCell>
+
+    <!-- KeycloakAuthMiddleware -->
+    <mxCell id="middleware" value="KeycloakAuth&#xa;Middleware"
+      style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#000000;fontSize=11;"
+      vertex="1" parent="1">
+      <mxGeometry x="200" y="200" width="155" height="55" as="geometry" />
+    </mxCell>
+
+    <!-- API Router -->
+    <mxCell id="router" value="API Router&#xa;POST /generate-email"
+      style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#000000;fontSize=11;"
+      vertex="1" parent="1">
+      <mxGeometry x="400" y="200" width="175" height="55" as="geometry" />
+    </mxCell>
+
+    <!-- EmailController -->
+    <mxCell id="controller" value="Email Controller"
+      style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#000000;fontSize=11;"
+      vertex="1" parent="1">
+      <mxGeometry x="630" y="200" width="155" height="55" as="geometry" />
+    </mxCell>
+
+    <!-- EmailService -->
+    <mxCell id="service" value="Email Service&#xa;litellm.completion"
+      style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#000000;fontSize=11;"
+      vertex="1" parent="1">
+      <mxGeometry x="840" y="200" width="165" height="55" as="geometry" />
+    </mxCell>
+
+    <!-- ══════════════════════════════════════
+         BOTTOM ROW — Config (y=360)
+         Directly below EmailController, same x=630-785
+         ══════════════════════════════════════ -->
+
+    <!-- LLM Config Service -->
+    <mxCell id="llmconfig" value="LLM Config Service&#xa;get_llm_config"
+      style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#000000;fontSize=11;"
+      vertex="1" parent="1">
+      <mxGeometry x="630" y="360" width="155" height="55" as="geometry" />
+    </mxCell>
+
+    <!-- ══════════════════════════════════════
+         ARROWS
+         ══════════════════════════════════════ -->
+
+    <!-- 1. Client → Middleware  (horizontal right) -->
+    <mxCell id="e1" value="HTTP POST"
+      style="edgeStyle=orthogonalEdgeStyle;html=1;fontSize=10;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;"
+      edge="1" source="client" target="middleware" parent="1">
+      <mxGeometry relative="1" as="geometry" />
+    </mxCell>
+
+    <!-- 2. Middleware ↑ Keycloak  (straight vertical — same center-x = 277) -->
+    <mxCell id="e2" value="validate JWT"
+      style="edgeStyle=orthogonalEdgeStyle;html=1;fontSize=10;exitX=0.5;exitY=0;exitDx=0;exitDy=0;entryX=0.5;entryY=1;entryDx=0;entryDy=0;"
+      edge="1" source="middleware" target="keycloak" parent="1">
+      <mxGeometry relative="1" as="geometry" />
+    </mxCell>
+
+    <!-- 3. Middleware → API Router  (horizontal right) -->
+    <mxCell id="e3" value="authenticated"
+      style="edgeStyle=orthogonalEdgeStyle;html=1;fontSize=10;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;"
+      edge="1" source="middleware" target="router" parent="1">
+      <mxGeometry relative="1" as="geometry" />
+    </mxCell>
+
+    <!-- 4. API Router → EmailController  (horizontal right) -->
+    <mxCell id="e4" value="dispatch"
+      style="edgeStyle=orthogonalEdgeStyle;html=1;fontSize=10;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;"
+      edge="1" source="router" target="controller" parent="1">
+      <mxGeometry relative="1" as="geometry" />
+    </mxCell>
+
+    <!-- 5. EmailController → EmailService  (horizontal right) -->
+    <mxCell id="e5" value="generate email"
+      style="edgeStyle=orthogonalEdgeStyle;html=1;fontSize=10;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;"
+      edge="1" source="controller" target="service" parent="1">
+      <mxGeometry relative="1" as="geometry" />
+    </mxCell>
+
+    <!-- 6. EmailController ↓ LLM Config  (straight vertical — same center-x = 707) -->
+    <mxCell id="e6" value="fetch team config"
+      style="edgeStyle=orthogonalEdgeStyle;html=1;fontSize=10;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;"
+      edge="1" source="controller" target="llmconfig" parent="1">
+      <mxGeometry relative="1" as="geometry" />
+    </mxCell>
+
+    <!-- 7. EmailService ↑ LLM Provider  (straight vertical — same center-x = 922) -->
+    <mxCell id="e7" value="LLM call"
+      style="html=1;fontSize=10;exitX=0.5;exitY=0;exitDx=0;exitDy=0;entryX=0.5;entryY=1;entryDx=0;entryDy=0;"
+      edge="1" source="service" target="llmprovider" parent="1">
+      <mxGeometry relative="1" as="geometry" />
+    </mxCell>
+
+    <!-- 8. EmailService → Kafka  (diagonal, exits top-right area, no crossing with e7) -->
+    <mxCell id="e8" value="log event"
+      style="html=1;fontSize=10;exitX=0.75;exitY=0;exitDx=0;exitDy=0;entryX=0.5;entryY=1;entryDx=0;entryDy=0;"
+      edge="1" source="service" target="kafka" parent="1">
+      <mxGeometry relative="1" as="geometry" />
+    </mxCell>
+
+    <!-- 9. EmailService → Tracing  (diagonal, exits top-far-right, no crossing with e8) -->
+    <mxCell id="e9" value="trace span"
+      style="html=1;fontSize=10;exitX=1;exitY=0;exitDx=0;exitDy=0;entryX=0.5;entryY=1;entryDx=0;entryDy=0;"
+      edge="1" source="service" target="tracing" parent="1">
+      <mxGeometry relative="1" as="geometry" />
+    </mxCell>
+
+  </root>
+</mxGraphModel>

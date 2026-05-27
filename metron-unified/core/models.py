@@ -272,13 +272,19 @@ class RunConfig(BaseModel):
     load_duration_seconds:  int  = 30
 
     # LLM
-    llm_provider:   str = "Groq"
-    llm_api_key:    str = ""
-    azure_endpoint: str = ""   # required for Azure OpenAI — base URL e.g. https://my-resource.openai.azure.com/
+    llm_provider:         str = "Groq"
+    llm_api_key:          str = ""
+    azure_endpoint:       str = ""   # required for Azure OpenAI — base URL e.g. https://my-resource.openai.azure.com/
+    aws_access_key_id:    str = ""   # AWS Bedrock — access key ID
+    aws_secret_access_key: str = ""  # AWS Bedrock — secret access key
+    aws_region:           str = "us-east-1"  # AWS Bedrock — region
+    bedrock_model_id:     str = ""   # AWS Bedrock — user-selected model ID (without bedrock/ prefix)
 
     # Security
     selected_attacks:      List[str] = ["jailbreak", "prompt_injection", "pii_extraction", "toxicity", "encoding"]
     attacks_per_category:  int = 3
+    # Garak adversarial probe depth: "off" | "basic" (11 curated probes) | "full" (all discovered)
+    garak_mode:            str = "basic"
 
     # Quality
     # deepeval_metrics controls which DeepEval metrics run in functional evaluation:
@@ -298,12 +304,25 @@ class RunConfig(BaseModel):
     #   {{query}}           — replaced with the test message
     #   {{uuid}}            — replaced with a new UUID on every request
     #   {{conversation_id}} — replaced with a UUID stable for all turns of one conversation
+    #   {{history}}         — replaced with formatted prior turns (history_injection mode only)
     # When set, request_field is ignored for body construction (response_field still used for extraction).
     request_template:     Optional[str] = None
 
     # Trim response text at this marker (e.g. "FOLLOW UP QUESTIONS").
     # Everything at and after the marker is discarded before evaluation.
     response_trim_marker: Optional[str] = None
+
+    # ── Email notifications ───────────────────────────────────────────────────
+    # If True, send the user an email when the run completes or fails.
+    notify_email: bool = False
+
+    # ── Multiturn session mode ─────────────────────────────────────────────
+    # Controls how METRON maintains conversation context across turns:
+    #   session_id        → server tracks memory; use {{conversation_id}} in template where session ID goes
+    #   history_injection → METRON injects prior turns via {{history}} placeholder in request_template
+    #   messages_array    → METRON builds an OpenAI-style messages list; request_field names the array key
+    #   none              → stateless; each turn sent independently with no history
+    session_mode: str = "session_id"
 
     # ── Architecture profile for RCA (Stage 8) ────────────────────────────
     # Core infrastructure
@@ -392,6 +411,10 @@ class GeneratedPrompt(BaseModel):
     severity:          Optional[str] = None   # critical/high/medium
     compliance_tags:   List[str] = []
     turn_number:       int = 1
+    # Pre-crafted follow-up turns from multi_turn_scenario (turns 2+).
+    # Replayed in order inside the state machine before dynamic generation kicks in.
+    # Each entry: {"turn": N, "prompt": "...", "expected_behavior": "..."}
+    scenario_turns:    List[Dict[str, Any]] = []
 
 
 # ── Stage 3: Conversation ──────────────────────────────────────────────────
@@ -567,14 +590,18 @@ class JobStatus(BaseModel):
 # ── API Request/Response models ────────────────────────────────────────────
 
 class PreviewRequest(BaseModel):
-    agent_description: str
-    agent_domain:      str = "general"
-    application_type:  str = "chatbot"
-    num_personas:      int = 3
-    num_scenarios:     int = 5
-    llm_provider:      str = "Groq"
-    llm_api_key:       str = ""
-    azure_endpoint:    str = ""
+    agent_description:    str
+    agent_domain:         str = "general"
+    application_type:     str = "chatbot"
+    num_personas:         int = 3
+    num_scenarios:        int = 5
+    llm_provider:         str = "Groq"
+    llm_api_key:          str = ""
+    azure_endpoint:       str = ""
+    aws_access_key_id:    str = ""
+    aws_secret_access_key: str = ""
+    aws_region:           str = "us-east-1"
+    bedrock_model_id:     str = ""
 
 class ConnectTestRequest(BaseModel):
     endpoint_url:         str

@@ -14,6 +14,7 @@ export default function DashboardLayout({
   const router = useRouter();
   const [isCollapsed, setIsCollapsed] = useState(false);
   const [userEmail, setUserEmail] = useState("");
+  const [orgName, setOrgName] = useState("");
 
   console.log("[DashboardLayout] Rendering (not just mounted)", {
     pathname,
@@ -38,6 +39,10 @@ export default function DashboardLayout({
           const email = (session.tokens.idToken?.payload?.email as string) ?? "";
           console.log("[DashboardLayout] Got email from token on first try:", email);
           setUserEmail(email);
+          fetch("/api/quota", { headers: { Authorization: `Bearer ${session.tokens.idToken!.toString()}` } })
+            .then(r => r.ok ? r.json() : null)
+            .then(d => { if (d?.tenant_name) setOrgName(d.tenant_name); })
+            .catch(() => {});
           return;
         }
 
@@ -61,6 +66,10 @@ export default function DashboardLayout({
               const email = (s.tokens.idToken?.payload?.email as string) ?? "";
               console.log("[DashboardLayout] Got email from token on retry:", email);
               setUserEmail(email);
+              fetch("/api/quota", { headers: { Authorization: `Bearer ${s.tokens.idToken!.toString()}` } })
+                .then(r => r.ok ? r.json() : null)
+                .then(d => { if (d?.tenant_name) setOrgName(d.tenant_name); })
+                .catch(() => {});
             } else {
               console.warn("[DashboardLayout] Still no tokens after retry, but allowing dashboard to load");
             }
@@ -91,7 +100,6 @@ export default function DashboardLayout({
   const navLinks = [
     { name: "Project Hub", icon: "grid_view", href: "/dashboard", active: true },
     { name: "Recent Runs", icon: "history", href: "#", active: false, badge: "Soon" },
-    { name: "Team Settings", icon: "group", href: "#", active: false, badge: "Soon" },
   ];
 
   return (
@@ -175,20 +183,22 @@ export default function DashboardLayout({
       {/* ─── Main View Zone ───────────────────────────── */}
       <main className="flex-1 flex flex-col relative overflow-hidden">
         {/* Top Navbar */}
-        <header className="h-16 flex items-center justify-between px-8 bg-white border-b border-[var(--color-outline-variant)] border-opacity-20 relative z-[40]">
+        <header className="h-16 flex items-center px-8 bg-white border-b border-[var(--color-outline-variant)] border-opacity-20 relative z-[40]">
            <div className="flex items-center gap-2">
               <span className="text-[9px] font-black text-outline uppercase tracking-[0.2em] opacity-40">Workspace</span>
               <span className="material-symbols-outlined text-sm text-outline opacity-20">chevron_right</span>
-              <span className="text-[9px] font-black text-on-surface uppercase tracking-[0.2em]">Live Intelligence Node</span>
-           </div>
-           
-           <div className="flex items-center gap-4">
-              <div className="lg:flex hidden h-9 items-center gap-2 px-4 rounded-full bg-[var(--color-surface-container-low)] border border-outline-variant/10">
-                 <span className="w-1.5 h-1.5 rounded-full bg-[#6bff8f] animate-pulse" />
-                 <span className="text-[9px] font-black text-on-surface uppercase tracking-widest opacity-70">Backend Synced</span>
-              </div>
+              {orgName ? (
+                <>
+                  <span className="text-[9px] font-black text-[var(--color-primary)] uppercase tracking-[0.2em]">{orgName}</span>
+                  <span className="material-symbols-outlined text-sm text-outline opacity-20">chevron_right</span>
+                  <span className="text-[9px] font-black text-on-surface uppercase tracking-[0.2em] opacity-60">Dashboard</span>
+                </>
+              ) : (
+                <span className="text-[9px] font-black text-on-surface uppercase tracking-[0.2em]">Live Intelligence Node</span>
+              )}
            </div>
         </header>
+
 
         {/* Content Zone */}
         <div className="flex-1 overflow-y-auto p-8 animate-fade-in no-scrollbar bg-[var(--color-background)]">

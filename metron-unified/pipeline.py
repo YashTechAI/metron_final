@@ -6,11 +6,20 @@ and handles the full lifecycle from AppProfile → AggregatedReport.
 
 from __future__ import annotations
 import asyncio
+import os
+import time
 import uuid
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from core import db as _db
+import core.mlflow_run as _mlflow_run
+from core.notifications import notify_run_complete, notify_run_failed
+
+_mlflow_run.configure(
+    tracking_uri=os.environ.get("MLFLOW_TRACKING_URI", ""),
+    experiment_name=os.environ.get("MLFLOW_EXPERIMENT_NAME", "metron-llmops"),
+)
 
 # Per-run locks prevent concurrent pipeline stages from overwriting each other's
 # job_store state when multiple runs execute simultaneously.
@@ -49,6 +58,7 @@ from stages.s4_evaluation.quality import evaluate_quality
 from stages.s4_evaluation.performance import evaluate_performance
 from stages.s4_evaluation.load import evaluate_load
 from stages.s4_evaluation.rag import evaluate_rag
+from stages.s4_evaluation.garak_eval import evaluate_garak
 from stages.s5_aggregation.aggregator import aggregate
 from stages.s7_report.report_generator import report_to_json, generate_html_report
 from stages.s8_rca.rca_mapper import run_rca
@@ -57,15 +67,51 @@ from stages.s8_rca.prompt_classifier import classify_prompt_failures
 
 # ── Progress helpers ───────────────────────────────────────────────────────
 
+_MAX_LOG_EVENTS = 300   # sliding window — keeps feed responsive with 100+ personas
+
+# Known pipeline phases
+_ALL_PHASES = {"functional", "security", "quality", "performance", "load"}
+
+# Maps user role → set of pipeline phases that role is allowed to execute.
+# Phases not in the set are skipped entirely.
+_ROLE_PHASES: Dict[str, set] = {
+    "functional_tester":   {"functional"},
+    "security_tester":     {"security"},
+    "quality":             {"quality"},
+    "performance":         {"performance"},
+    "load":                {"load"},
+    "security+functional": {"security", "functional"},
+    "functional+quality":  {"functional", "quality"},
+    "performance+load":    {"performance", "load"},
+    "all":                 _ALL_PHASES,
+    "tenant_admin":        _ALL_PHASES,
+    "super_admin":         _ALL_PHASES,
+}
+
+def _allowed_phases(user_role: str) -> set:
+    """Resolve a role string to the set of allowed phases.
+    Handles legacy named roles AND dynamic checkbox-built roles like
+    'functional+security+load' — any '+'-joined combination of phase names.
+    """
+    if user_role in _ROLE_PHASES:
+        return _ROLE_PHASES[user_role]
+    # Dynamic: split by '+' and keep only known phase names
+    parts = {p.strip() for p in user_role.split("+")} & _ALL_PHASES
+    return parts if parts else _ALL_PHASES
+
 def _log(job_store: Dict, run_id: str, event_type: str, content: Dict):
     """Append a rich log event to the job's event stream for the live feed UI."""
     if run_id not in job_store:
         return
-    job_store[run_id].setdefault("log_events", []).append({
+    events = job_store[run_id].setdefault("log_events", [])
+    events.append({
         "type": event_type,
         "ts": datetime.utcnow().strftime("%H:%M:%S"),
         "content": content,
     })
+    # Rolling cap — drop oldest events so poll payload stays manageable
+    if len(events) > _MAX_LOG_EVENTS:
+        job_store[run_id]["log_events"] = events[-_MAX_LOG_EVENTS:]
 
 
 def _update(job_store: Dict, run_id: str, progress: int, message: str, phase: str = "", phase_data: Optional[Dict] = None):
@@ -86,6 +132,7 @@ async def run_pipeline(
     doc_text:   str = "",
     project_id: str = "",
     user_email: str = "",
+    user_role:  str = "all",
 ) -> None:
     """
     Full 8-stage pipeline. Updates job_store at each stage.
@@ -108,10 +155,30 @@ async def run_pipeline(
     # Acquire the concurrency slot — released in the finally block below
     await _pipeline_sem.acquire()
     job_store[run_id]["status"] = "running"
-    llm_client = LLMClient(config.llm_provider, config.llm_api_key, azure_endpoint=config.azure_endpoint)
+    phases = _allowed_phases(user_role)
+    job_store[run_id]["allowed_phases"] = sorted(phases)
+    llm_client = LLMClient(
+        config.llm_provider, config.llm_api_key,
+        azure_endpoint=config.azure_endpoint,
+        aws_access_key_id=getattr(config, "aws_access_key_id", "") or "",
+        aws_secret_access_key=getattr(config, "aws_secret_access_key", "") or "",
+        aws_region=getattr(config, "aws_region", "") or "",
+        bedrock_model_id=getattr(config, "bedrock_model_id", "") or "",
+    )
+
+    _mlflow_run_id = _mlflow_run.start_run(
+        metron_run_id=run_id,
+        project_id=project_id,
+        domain=config.agent_domain,
+        provider=config.llm_provider,
+        num_personas=config.num_personas,
+    )
+    llm_client._mlflow_run_id = _mlflow_run_id or ""
 
     try:
         # ── Stage 0: App Profile ───────────────────────────────────────────
+        llm_client._current_stage = "s0"
+        _mlflow_run.set_stage_tag(_mlflow_run_id, "s0")
         _update(job_store, run_id, 5, "Analyzing agent profile…", "profiling")
         if doc_text.strip():
             profile = await parse_document(doc_text, llm_client, project_id)
@@ -152,6 +219,8 @@ async def run_pipeline(
             })
 
         # ── Stage 1: Persona Generation (Fishbone) ─────────────────────────
+        llm_client._current_stage = "s1"
+        _mlflow_run.set_stage_tag(_mlflow_run_id, "s1")
         _update(job_store, run_id, 10, "Building persona coverage matrix…", "personas")
         _log(job_store, run_id, "phase_start", {"phase": "personas", "label": "Persona Generation"})
         slots = build_slots(profile, num_personas=config.num_personas)
@@ -178,29 +247,41 @@ async def run_pipeline(
                 {"count": len(personas), "names": [p.name for p in personas]})
 
         # ── Stage 2: Domain-Specific Test Generation ───────────────────────
+        llm_client._current_stage = "s2"
+        _mlflow_run.set_stage_tag(_mlflow_run_id, "s2")
         _update(job_store, run_id, 20, "Generating domain-specific test prompts…", "test_gen")
         _log(job_store, run_id, "phase_start", {"phase": "test_gen", "label": "Test Generation"})
 
-        # 2a: Functional prompts — always LLM-generated, grounded in rag_text for RAG mode.
-        # Ground truth Q&A pairs are handled separately in Stream 2 (after Stage 3).
+        # 2a: Functional prompts
         rag_text = config.rag_text if config.is_rag else ""
-        func_prompts = await generate_all_functional(
-            personas, profile, llm_client,
-            rag_text=rag_text,
-            max_prompts=config.num_scenarios or 0,   # Fix 35: wire UI num_scenarios cap
-        )
+        func_prompts = []
+        if "functional" in phases or "quality" in phases:
+            _log(job_store, run_id, "phase_progress", {"phase": "test_gen", "step": "functional", "message": "Generating functional test prompts…"})
+            func_prompts = await generate_all_functional(
+                personas, profile, llm_client,
+                rag_text=rag_text,
+                max_prompts=config.num_scenarios or 0,
+            )
+        _update(job_store, run_id, 21, f"Generated {len(func_prompts)} functional prompts, generating security tests…", "test_gen")
 
-        # 2b: Security prompts (adversarial personas only) + technical probes
-        sec_prompts = await generate_all_security(
-            personas, profile, llm_client,
-            selected_categories=config.selected_attacks,
-            attacks_per_category=config.attacks_per_category,
-            attack_vectors=attack_vectors,
-            tech_profile=tech_profile,
-        )
+        # 2b: Security prompts
+        sec_prompts = []
+        if "security" in phases:
+            _log(job_store, run_id, "phase_progress", {"phase": "test_gen", "step": "security", "message": "Generating security/adversarial tests…"})
+            sec_prompts = await generate_all_security(
+                personas, profile, llm_client,
+                selected_categories=config.selected_attacks,
+                attacks_per_category=config.attacks_per_category,
+                attack_vectors=attack_vectors,
+                tech_profile=tech_profile,
+            )
+        _update(job_store, run_id, 23, f"Generated {len(sec_prompts)} security prompts, generating quality criteria…", "test_gen")
 
         # 2c: Quality criteria
-        quality_criteria = await generate_quality_criteria(profile, llm_client)
+        quality_criteria = {}
+        if "quality" in phases:
+            _log(job_store, run_id, "phase_progress", {"phase": "test_gen", "step": "quality", "message": "Generating quality criteria…"})
+            quality_criteria = await generate_quality_criteria(profile, llm_client)
 
         all_prompts = func_prompts + sec_prompts
 
@@ -233,6 +314,8 @@ async def run_pipeline(
                 {"functional": len(func_prompts), "security": len(sec_prompts)})
 
         # ── Stage 3+4: Execution + Evaluation (interleaved) ────────────────
+        llm_client._current_stage = "s3"
+        _mlflow_run.set_stage_tag(_mlflow_run_id, "s3")
         _update(job_store, run_id, 28, "Running conversations with target AI…", "execution")
         _log(job_store, run_id, "phase_start", {"phase": "execution", "label": "Running Conversations"})
 
@@ -247,8 +330,8 @@ async def run_pipeline(
             _log(job_store, run_id, "conversation", {
                 "persona_name": conv.persona_name,
                 "test_class": phase,
-                "query": last_turn.query if last_turn else "",
-                "response": last_turn.response if last_turn else "",
+                "query":    (last_turn.query    or "")[:400] if last_turn else "",
+                "response": (last_turn.response or "")[:500] if last_turn else "",
                 "latency_ms": round(conv.total_latency_ms),
                 "num_turns": len(conv.turns),
                 "done": done,
@@ -264,6 +347,8 @@ async def run_pipeline(
         # Each evaluator runs internally throttled (sem=3 per evaluator, timeouts on every
         # Azure call) so they cannot hang forever. Progress ticks every ~10s so the UI
         # always shows movement even while evaluation is running.
+        llm_client._current_stage = "s4"
+        _mlflow_run.set_stage_tag(_mlflow_run_id, "s4")
         _update(job_store, run_id, 58, "Evaluating results (functional + security + quality in parallel)…", "functional")
         _log(job_store, run_id, "phase_start", {"phase": "evaluation", "label": "Evaluating Results"})
 
@@ -288,11 +373,21 @@ async def run_pipeline(
                     return []
 
             async def _all_evals():
-                return await asyncio.gather(
-                    _safe(evaluate_functional(conversations, personas, config, llm_client, quality_criteria), "functional"),
-                    _safe(evaluate_security(conversations, personas, config, llm_client),                     "security"),
-                    _safe(evaluate_quality(conversations, personas, config, llm_client, quality_criteria),    "quality"),
-                )
+                coros = []
+                if "functional" in phases:
+                    coros.append(_safe(evaluate_functional(conversations, personas, config, llm_client, quality_criteria), "functional"))
+                if "security" in phases:
+                    coros.append(_safe(evaluate_security(conversations, personas, config, llm_client), "security"))
+                if "quality" in phases:
+                    coros.append(_safe(evaluate_quality(conversations, personas, config, llm_client, quality_criteria), "quality"))
+                results = await asyncio.gather(*coros)
+                # Pad missing phases with empty lists to keep unpack consistent
+                out = [[], [], []]
+                idx = 0
+                if "functional" in phases: out[0] = results[idx]; idx += 1
+                if "security"   in phases: out[1] = results[idx]; idx += 1
+                if "quality"    in phases: out[2] = results[idx]; idx += 1
+                return out
 
             eval_task = asyncio.create_task(_all_evals())
             progress = 58
@@ -313,6 +408,31 @@ async def run_pipeline(
             return await eval_task
 
         func_results, sec_results, qual_results = await _run_evals_with_progress()
+
+        # ── Garak adversarial probes ───────────────────────────────────────────
+        # Always runs — 17 curated probes concurrently after main eval.
+        # Results use superset="security" and merge into sec_results.
+        garak_results: List[MetricResult] = []
+        _update(job_store, run_id, 73, "Running Garak adversarial probes (17 curated probes)…", "security")
+        _log(job_store, run_id, "phase_start", {"phase": "garak", "label": "Garak Adversarial Probes"})
+        try:
+            garak_results = await evaluate_garak(config, llm_client)
+            vuln_count = sum(1 for r in garak_results if not r.skipped and r.vulnerability_found)
+            _log(job_store, run_id, "garak_complete", {
+                "probes":          len(garak_results),
+                "vulnerabilities": vuln_count,
+            })
+            _update(
+                job_store, run_id, 74,
+                f"Garak: {len(garak_results)} probe(s) — {vuln_count} vulnerability/ies",
+                "security",
+                {"garak_probes": len(garak_results), "garak_vulns": vuln_count},
+            )
+        except Exception as _garak_err:
+            print(f"[Pipeline] Garak evaluation failed (non-fatal): {_garak_err}")
+            _update(job_store, run_id, 74, "Garak probes skipped", "security")
+
+        sec_results = sec_results + garak_results
 
         # ── Stream 2: Ground truth direct evaluation (RAG mode only) ─────────
         # Sends ground truth questions straight to the RAG endpoint with no persona
@@ -406,7 +526,12 @@ async def run_pipeline(
         # Stage 4: Performance evaluation
         _update(job_store, run_id, 75, "Running performance tests…", "performance")
         _log(job_store, run_id, "phase_start", {"phase": "performance", "label": "Performance Tests"})
-        perf_metrics = await evaluate_performance(config, run_id=run_id)
+        perf_metrics = await evaluate_performance(config, run_id=run_id) if "performance" in phases else {
+            "total_requests": 0, "successful": 0, "errors": 0, "error_rate": 0.0,
+            "avg_latency_ms": 0.0, "min_latency_ms": 0.0, "max_latency_ms": 0.0,
+            "median_latency_ms": 0.0, "p95_latency_ms": 0.0, "p99_latency_ms": 0.0,
+            "throughput_rps": 0.0, "assessment": "skipped (role restriction)",
+        }
         _log(job_store, run_id, "perf_complete", {
             "avg_latency_ms": round(perf_metrics.get("avg_latency_ms", 0)),
             "p95_latency_ms": round(perf_metrics.get("p95_latency_ms", 0)),
@@ -423,7 +548,12 @@ async def run_pipeline(
         _update(job_store, run_id, 84, f"Running load test ({config.load_concurrent_users} concurrent users)…", "load")
         _log(job_store, run_id, "phase_start", {"phase": "load", "label": f"Load Test — {config.load_concurrent_users} concurrent users"})
         try:
-            load_metrics = await evaluate_load(config)
+            load_metrics = await evaluate_load(config) if "load" in phases else {
+                "tool_used": "locust", "concurrent_users": 0, "total_requests": 0,
+                "successful": 0, "errors": 0, "error_rate": 0.0, "avg_latency_ms": 0.0,
+                "p95_latency_ms": 0.0, "p99_latency_ms": 0.0, "requests_per_second": 0.0,
+                "passed": True, "assessment": "skipped (role restriction)",
+            }
         except Exception as load_err:
             print(f"[Pipeline] Load test failed: {load_err}")
             load_metrics = {
@@ -447,6 +577,8 @@ async def run_pipeline(
                 "load", load_metrics)
 
         # ── Stage 5: Aggregation ───────────────────────────────────────────
+        llm_client._current_stage = "s5"
+        _mlflow_run.set_stage_tag(_mlflow_run_id, "s5")
         _update(job_store, run_id, 90, "Aggregating results…", "aggregation")
         report = aggregate(
             metric_results=all_metric_results,
@@ -462,6 +594,8 @@ async def run_pipeline(
         )
 
         # ── Stage 8: Root Cause Analysis ──────────────────────────────────
+        llm_client._current_stage = "s8"
+        _mlflow_run.set_stage_tag(_mlflow_run_id, "s8")
         _update(job_store, run_id, 94, "Running root cause analysis…", "rca")
         _log(job_store, run_id, "phase_start", {"phase": "rca", "label": "Root Cause Analysis"})
         try:
@@ -526,16 +660,20 @@ async def run_pipeline(
             })
 
         # ── Stage 7: Report Generation ─────────────────────────────────────
+        llm_client._current_stage = "s7"
+        _mlflow_run.set_stage_tag(_mlflow_run_id, "s7")
         _update(job_store, run_id, 97, "Generating report…", "report")
         _log(job_store, run_id, "phase_start", {"phase": "report", "label": "Generating Report"})
-        report.report_html = generate_html_report(report)
+        report.report_html = generate_html_report(report, user_role=user_role)
         final_json = report_to_json(report)
+        final_json["user_role"] = user_role
         _log(job_store, run_id, "pipeline_complete", {
             "health_score": round(report.health_score * 100, 1),
             "passed": report.passed,
             "total_tests": report.total_tests,
             "total_passed": report.total_passed,
             "domain": report.domain,
+            "user_role": user_role,
         })
         _update(job_store, run_id, 99, "Report ready", "report", {"generated": True})
 
@@ -649,9 +787,74 @@ async def run_pipeline(
         if report.rca:
             final_json["rca"] = report.rca.model_dump()
 
+        _full_run_roles = {"all", "tenant_admin", "super_admin"}
+        _is_full_run = user_role in _full_run_roles
+
+        # ── Token tracking: write to MLflow, read back, persist to metron_runs.db ─
+        _calls      = llm_client._token_totals["calls"]
+        _prompt     = llm_client._token_totals["prompt"]
+        _completion = llm_client._token_totals["completion"]
+        _total      = _prompt + _completion
+
+        if _total > 0 or _calls > 0:
+            _latency_ms  = llm_client._token_totals["latency_ms"]
+            _cost_usd    = llm_client._token_totals["cost_usd"]
+            _retry_count = llm_client._token_totals["retry_count"]
+            _truncated   = llm_client._token_totals["truncated_calls"]
+            _duration_s  = time.monotonic() - llm_client._pipeline_start
+
+            if _mlflow_run_id:
+                # MLflow configured — write metrics to MLflow, read back as source of truth
+                _mlflow_run.log_token_metrics(
+                    mlflow_run_id=_mlflow_run_id,
+                    prompt_tokens=_prompt,
+                    completion_tokens=_completion,
+                    total_tokens=_total,
+                    calls=_calls,
+                    cost_usd=_cost_usd,
+                    latency_ms=_latency_ms,
+                    by_stage=llm_client._stage_totals,
+                    retry_count=_retry_count,
+                    truncated_calls=_truncated,
+                    models_used=llm_client._models_used,
+                    pipeline_duration_s=_duration_s,
+                )
+                _token_summary = _mlflow_run.read_token_summary(_mlflow_run_id)
+            else:
+                # MLflow not configured — build summary directly from Python accumulators
+                _token_summary = {
+                    "total_calls":             _calls,
+                    "total_prompt_tokens":     _prompt,
+                    "total_completion_tokens": _completion,
+                    "total_tokens":            _total,
+                    "estimated_cost_usd":      round(_cost_usd, 6),
+                    "avg_latency_ms":          round(_latency_ms / _calls, 1) if _calls else 0.0,
+                    "tpot_ms":                 round(_latency_ms / _completion, 2) if _completion else 0.0,
+                    "token_efficiency_ratio":  round(_completion / _prompt, 4) if _prompt else 0.0,
+                    "tpm_velocity":            round((_total / _duration_s) * 60, 1) if _duration_s else 0.0,
+                    "retry_count":             _retry_count,
+                    "truncated_calls":         _truncated,
+                    "truncation_rate":         round(_truncated / _calls, 4) if _calls else 0.0,
+                    "models_used":             dict(llm_client._models_used),
+                    "by_stage":                dict(llm_client._stage_totals),
+                }
+
+            if _token_summary and _token_summary.get("total_tokens", 0) > 0:
+                job_store[run_id]["token_summary"] = _token_summary
+                _db.save_token_summary(run_id, _token_summary)
+                _log(job_store, run_id, "token_summary", {
+                    "total_tokens":       _token_summary["total_tokens"],
+                    "estimated_cost_usd": _token_summary["estimated_cost_usd"],
+                    "avg_latency_ms":     _token_summary["avg_latency_ms"],
+                    "by_stage":           _token_summary["by_stage"],
+                })
+        _mlflow_run.end_run(_mlflow_run_id, "FINISHED")
         job_store[run_id]["status"]   = "completed"
         job_store[run_id]["progress"] = 100
-        job_store[run_id]["message"]  = f"Completed! Health score: {report.health_score:.0%}"
+        job_store[run_id]["message"]  = (
+            f"Completed! Health score: {report.health_score:.0%}" if _is_full_run
+            else f"Completed! {report.total_passed}/{report.total_tests} tests passed"
+        )
         job_store[run_id]["results"]  = final_json
         _job_locks.pop(run_id, None)   # release lock for completed run
 
@@ -660,14 +863,34 @@ async def run_pipeline(
             _db.save_run(
                 run_id=run_id,
                 project_id=project_id,
-                health_score=report.health_score,
+                health_score=report.health_score if _is_full_run else None,
                 domain=config.agent_domain,
                 application_type=config.application_type.value,
                 results=final_json,
                 user_email=user_email,
+                total_passed=report.total_passed,
+                total_tests=report.total_tests,
             )
         except Exception as db_err:
             print(f"[Pipeline] DB save failed (non-fatal): {db_err}")
+
+        # ── Email notification — run completed ────────────────────────────────
+        if getattr(config, "notify_email", False) and user_email:
+            try:
+                notify_run_complete(
+                    user_email=user_email,
+                    agent_name=config.agent_name,
+                    domain=config.agent_domain,
+                    health_score=report.health_score,
+                    passed=report.passed,
+                    total_tests=report.total_tests,
+                    total_passed=report.total_passed,
+                    run_id=run_id,
+                    report_html=report.report_html,
+                    is_full_run=_is_full_run,
+                )
+            except Exception as _notify_err:
+                print(f"[Pipeline] Email notification failed (non-fatal): {_notify_err}")
 
     except Exception as e:
         import traceback
@@ -676,9 +899,22 @@ async def run_pipeline(
         job_store[run_id]["message"] = f"Pipeline failed: {str(e)[:200]}"
         print(f"[Pipeline ERROR] {run_id}: {traceback.format_exc()}")
         _job_locks.pop(run_id, None)
+        _mlflow_run.end_run(_mlflow_run_id, "FAILED")
         try:
             _db.mark_run_failed(run_id, str(e))
         except Exception as _db_fail_err:
             print(f"[Pipeline] mark_run_failed failed: {_db_fail_err}")
+
+        # ── Email notification — run failed ───────────────────────────────────
+        if getattr(config, "notify_email", False) and user_email:
+            try:
+                notify_run_failed(
+                    user_email=user_email,
+                    agent_name=config.agent_name,
+                    run_id=run_id,
+                    error_msg=str(e),
+                )
+            except Exception as _notify_err:
+                print(f"[Pipeline] Failure email notification failed (non-fatal): {_notify_err}")
     finally:
         _pipeline_sem.release()
