@@ -213,4 +213,10 @@ h1, h2, h3, h4, h5, h6 {
   border-radius: 9999px;
   background: linear-gradient(90deg, var(--color-primary), var(--color-primary-container));
   transition: width 0.4s ease;
+  width: var(--bar-w, 0%);
+}
+
+/* Dynamic width utility — set --bar-w via style prop instead of inline width */
+.bar-dynamic {
+  width: var(--bar-w, 0%);
 }

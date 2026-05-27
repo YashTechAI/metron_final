@@ -92,23 +92,6 @@ def init_db() -> None:
                 pass  # column already exists
             # Mark any runs left in 'running' state as failed (crash recovery)
             conn.execute("UPDATE runs SET status='failed' WHERE status='running'")
-            # Restore tenant_admin role: for each tenant with NO tenant_admin user,
-            # promote the earliest-created user in that tenant to tenant_admin.
-            tenants_without_admin = conn.execute(
-                "SELECT tenant_id FROM tenants WHERE tenant_id NOT IN "
-                "(SELECT DISTINCT tenant_id FROM users WHERE role = 'tenant_admin' AND tenant_id IS NOT NULL)"
-            ).fetchall()
-            for t in tenants_without_admin:
-                earliest = conn.execute(
-                    "SELECT user_email FROM users WHERE tenant_id = ? ORDER BY created_at ASC LIMIT 1",
-                    (t["tenant_id"],),
-                ).fetchone()
-                if earliest:
-                    conn.execute(
-                        "UPDATE users SET role = 'tenant_admin' WHERE user_email = ?",
-                        (earliest["user_email"],),
-                    )
-                    print(f"[DB] Restored tenant_admin role to {earliest['user_email']} for tenant {t['tenant_id']}")
 
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS projects (
@@ -148,6 +131,24 @@ def init_db() -> None:
                 )
             """)
             conn.execute("CREATE INDEX IF NOT EXISTS idx_users_tenant ON users(tenant_id)")
+
+            # Restore tenant_admin role: for each tenant with NO tenant_admin user,
+            # promote the earliest-created user in that tenant to tenant_admin.
+            tenants_without_admin = conn.execute(
+                "SELECT tenant_id FROM tenants WHERE tenant_id NOT IN "
+                "(SELECT DISTINCT tenant_id FROM users WHERE role = 'tenant_admin' AND tenant_id IS NOT NULL)"
+            ).fetchall()
+            for t in tenants_without_admin:
+                earliest = conn.execute(
+                    "SELECT user_email FROM users WHERE tenant_id = ? ORDER BY created_at ASC LIMIT 1",
+                    (t["tenant_id"],),
+                ).fetchone()
+                if earliest:
+                    conn.execute(
+                        "UPDATE users SET role = 'tenant_admin' WHERE user_email = ?",
+                        (earliest["user_email"],),
+                    )
+                    print(f"[DB] Restored tenant_admin role to {earliest['user_email']} for tenant {t['tenant_id']}")
             conn.commit()
         finally:
             conn.close()

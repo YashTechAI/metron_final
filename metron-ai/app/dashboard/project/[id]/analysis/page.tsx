@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
+import { ProgressFill } from "@/components/ProgressFill";
 import { useParams } from "next/navigation";
 import { authFetch } from "@/lib/api";
 
@@ -186,10 +187,7 @@ export default function AnalysisPage() {
               </p>
             </div>
             <div className="w-80 h-1.5 rounded-full bg-outline-variant/20 overflow-hidden">
-              <div
-                className="h-full bg-primary rounded-full transition-all duration-1000"
-                style={{ width: `${progress}%` }}
-              />
+              <ProgressFill pct={progress} className="h-full bg-primary rounded-full transition-all duration-1000" />
             </div>
           </>
         )}
@@ -283,10 +281,7 @@ export default function AnalysisPage() {
                         </div>
                       </div>
                       <div className="h-2 rounded-full bg-outline-variant/20 overflow-hidden">
-                        <div
-                          className={`h-full rounded-full transition-all duration-700 ${passRate >= 0.7 ? "bg-[#006e2f]" : passRate >= 0.4 ? "bg-[#b45309]" : "bg-[#ba1a1a]"}`}
-                          style={{ width: pct(passRate) }}
-                        />
+                        <ProgressFill pct={passRate * 100} className={`h-full rounded-full transition-all duration-700 ${passRate >= 0.7 ? "bg-[#006e2f]" : passRate >= 0.4 ? "bg-[#b45309]" : "bg-[#ba1a1a]"}`} />
                       </div>
                     </div>
                   );
@@ -455,10 +450,7 @@ export default function AnalysisPage() {
                       </p>
                     </div>
                     <div className="h-1.5 rounded-full bg-outline-variant/20 overflow-hidden">
-                      <div
-                        className={`h-full rounded-full ${p.avg_score >= 0.7 ? "bg-[#006e2f]" : p.avg_score >= 0.4 ? "bg-[#b45309]" : "bg-[#ba1a1a]"}`}
-                        style={{ width: pct(p.avg_score) }}
-                      />
+                      <ProgressFill pct={p.avg_score * 100} className={`h-full rounded-full ${p.avg_score >= 0.7 ? "bg-[#006e2f]" : p.avg_score >= 0.4 ? "bg-[#b45309]" : "bg-[#ba1a1a]"}`} />
                     </div>
                     <div className="flex justify-between text-[9px] text-outline opacity-50 font-bold">
                       <span>{p.passed}/{p.total} passed</span>

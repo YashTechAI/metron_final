@@ -78,7 +78,7 @@ export default function ConfigurePage() {
   // Quality metrics
   const [ragasMetrics, setRagasMetrics] = useState<string[]>(["faithfulness", "answer_relevancy"]);
   const [deepevalMetrics, setDeepevalMetrics] = useState<string[]>(["hallucination", "toxicity"]);
-  const [useGeval, setUseGeval] = useState(false);
+  const [useGeval, setUseGeval] = useState(true);
 
   const [isNavigating, setIsNavigating] = useState(false);
   const [errors, setErrors] = useState<Record<string, string>>({});

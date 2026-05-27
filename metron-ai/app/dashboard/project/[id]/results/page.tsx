@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, Suspense, useCallback } from "react";
+import { ProgressFill } from "@/components/ProgressFill";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { authFetch } from "@/lib/api";
 
@@ -679,7 +680,7 @@ ${loadSection}`;
           {TABS[activeTab] === "Functional" && <FunctionalTab data={results.functional} personaBreakdown={results.persona_breakdown} onManualPass={(id) => handleManualPass("functional", id)} onManualRevert={(id) => handleManualRevert("functional", id)} />}
           {TABS[activeTab] === "Security" && <SecurityTab data={results.security} onManualPass={(id) => handleManualPass("security", id)} onManualRevert={(id) => handleManualRevert("security", id)} />}
           {TABS[activeTab] === "Quality" && <QualityTab data={results.quality} onManualPass={(id) => handleManualPass("quality", id)} onManualRevert={(id) => handleManualRevert("quality", id)} />}
-          {TABS[activeTab] === "RAG" && <RAGTab data={results.rag} onManualPass={(id) => handleManualPass("rag", id)} onManualRevert={(id) => handleManualRevert("rag", id)} />}
+          {TABS[activeTab] === "RAG" && results.rag && <RAGTab data={results.rag} onManualPass={(id) => handleManualPass("rag", id)} onManualRevert={(id) => handleManualRevert("rag", id)} />}
           {TABS[activeTab] === "Performance" && <PerformanceTab data={results.performance} />}
           {TABS[activeTab] === "Load Test" && <LoadTab data={results.load} />}
           {TABS[activeTab] === "LLMOps" && <LLMOpsTab data={tokenData} />}
@@ -1679,7 +1680,7 @@ function LLMOpsTab({ data }: { data: TokenSummary | null }) {
                     {STAGE_LABELS[stage as keyof typeof STAGE_LABELS] ?? stage}
                   </span>
                   <div className="flex-1 h-5 rounded-full bg-[var(--color-surface-container-low)] overflow-hidden">
-                    <div className="h-full rounded-full bg-primary opacity-70 transition-all" style={{ width: `${barPct}%` }} />
+                    <ProgressFill pct={barPct} className="h-full rounded-full bg-primary opacity-70 transition-all" />
                   </div>
                   <span className="text-xs text-[var(--color-on-surface-variant)] opacity-70 w-40 shrink-0 text-right">
                     {s.calls} calls · {s.total_tokens.toLocaleString()} tokens
@@ -1696,7 +1697,7 @@ function LLMOpsTab({ data }: { data: TokenSummary | null }) {
         <div className="space-y-2">
           <p className="text-xs font-bold uppercase tracking-widest text-[var(--color-on-surface-variant)] opacity-60">Input vs Output Tokens</p>
           <div className="h-5 rounded-full overflow-hidden flex">
-            <div className="h-full bg-primary opacity-70" style={{ width: `${promptPct}%` }} />
+            <ProgressFill pct={promptPct} className="h-full bg-primary opacity-70" />
             <div className="h-full bg-secondary opacity-50 flex-1" />
           </div>
           <div className="flex justify-between text-xs text-[var(--color-on-surface-variant)] opacity-60">

@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useRef, useCallback } from "react";
+import { ProgressFill } from "@/components/ProgressFill";
 import { useParams, useRouter } from "next/navigation";
 import { authFetch } from "@/lib/api";
 
@@ -41,8 +42,7 @@ function QuotaBanner({ quota }: { quota: QuotaStatus }) {
       <div className="flex gap-2 items-center">
         {quota.run_limit > 0 && (
           <div className="w-24 h-1.5 rounded-full bg-[var(--color-outline-variant)]/30 overflow-hidden">
-            <div className={`h-full rounded-full transition-all ${blocked ? "bg-error" : warn ? "bg-[#855300]" : "bg-primary"}`}
-              style={{ width: `${Math.min(userPct, 100)}%` }} />
+            <ProgressFill pct={Math.min(userPct, 100)} className={`h-full rounded-full transition-all ${blocked ? "bg-error" : warn ? "bg-[#855300]" : "bg-primary"}`} />
           </div>
         )}
       </div>
@@ -523,7 +523,7 @@ export default function RunPage() {
           <span className="font-headline text-3xl font-black text-primary">{progress}%</span>
         </div>
         <div className="progress-bar-track">
-          <div className="progress-bar-fill transition-all duration-700" style={{ width: `${progress}%` }} />
+          <ProgressFill pct={progress} className="progress-bar-fill transition-all duration-700" />
         </div>
       </div>
 

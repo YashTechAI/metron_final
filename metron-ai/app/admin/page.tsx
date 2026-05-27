@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback } from "react";
 import { authFetch } from "@/lib/api";
+import { ProgressFill } from "@/components/ProgressFill";
 
 interface TenantUser {
   user_email: string;
@@ -223,8 +224,7 @@ export default function AdminPage() {
             <span className={`font-black ${quotaPct >= 100 ? "text-error" : quotaPct >= 80 ? "text-[#855300]" : "text-primary"}`}>{quotaPct}%</span>
           </div>
           <div className="h-2 rounded-full bg-[var(--color-outline-variant)]/30 overflow-hidden">
-            <div className={`h-full rounded-full transition-all ${quotaPct >= 100 ? "bg-error" : quotaPct >= 80 ? "bg-[#855300]" : "bg-primary"}`}
-              style={{ width: `${Math.min(quotaPct, 100)}%` }} />
+            <ProgressFill pct={quotaPct} className={`h-full rounded-full transition-all ${quotaPct >= 100 ? "bg-error" : quotaPct >= 80 ? "bg-[#855300]" : "bg-primary"}`} />
           </div>
           <p className="text-[10px] text-[var(--color-on-surface-variant)] opacity-60">
             {stats.quota_used} of {stats.quota_limit} runs used · resets monthly
@@ -318,6 +318,8 @@ export default function AdminPage() {
                   <div className="flex items-center gap-1.5">
                     <span className="text-[10px] text-[var(--color-on-surface-variant)] opacity-60">Limit:</span>
                     <input defaultValue={u.run_limit} type="number" min={0}
+                      aria-label="Run limit"
+                      placeholder="0"
                       onBlur={e => updateUser(u.user_email, "run_limit", Number(e.target.value))}
                       className="w-16 text-xs text-center px-2 py-1 rounded-lg border border-[var(--color-outline-variant)] bg-white" />
                   </div>

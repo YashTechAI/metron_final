@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback } from "react";
 import { authFetch } from "@/lib/api";
+import { ProgressFill } from "@/components/ProgressFill";
 
 interface Tenant {
   tenant_id: string;
@@ -227,8 +228,7 @@ export default function SuperPage() {
                     </span>
                   </div>
                   <div className="h-1 rounded-full bg-[var(--color-outline-variant)]/30 overflow-hidden mb-2">
-                    <div className={`h-full rounded-full ${pct >= 100 ? "bg-error" : pct >= 80 ? "bg-[#855300]" : "bg-primary"}`}
-                      style={{ width: `${Math.min(pct, 100)}%` }} />
+                    <ProgressFill pct={pct} className={`h-full rounded-full ${pct >= 100 ? "bg-error" : pct >= 80 ? "bg-[#855300]" : "bg-primary"}`} />
                   </div>
                   <div className="flex items-center gap-4 text-[10px] text-[var(--color-on-surface-variant)] opacity-60">
                     <span><span className="font-bold text-[var(--color-on-surface)] opacity-100">{t.user_count}</span> admins</span>
@@ -272,6 +272,8 @@ export default function SuperPage() {
                 <div className="flex items-center gap-3">
                   <span className="text-xs text-[var(--color-on-surface-variant)] opacity-60">Monthly quota:</span>
                   <input defaultValue={selected.quota_limit} type="number" min={0}
+                    aria-label="Monthly quota"
+                    placeholder="0"
                     onChange={e => setEditQuota(p => ({ ...p, [selected.tenant_id]: Number(e.target.value) }))}
                     className="w-20 text-xs text-center px-2 py-1 rounded-lg border border-[var(--color-outline-variant)] bg-white" />
                   <button onClick={() => saveQuota(selected.tenant_id)}

@@ -13,6 +13,7 @@ litellm>=1.30.0
 
 # ── LLMOps: token tracking + traces via MLflow ───────────────────────────────
 mlflow-skinny>=2.13.0
+alembic>=1.13.0
 
 # ── LLM Provider SDKs ────────────────────────────────────────────────────────
 groq>=0.4.0
