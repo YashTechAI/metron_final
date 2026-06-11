@@ -6,7 +6,7 @@
 code-review-graph MCP tools BEFORE using Grep/Glob/Read to explore
 the codebase.** The graph is faster, cheaper (fewer tokens), and gives
 you structural context (callers, dependents, test coverage) that file
-scanning cannot.
+scanning cannot. hi
 
 ### When to use graph tools FIRST
 
