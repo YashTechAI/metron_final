@@ -1,0 +1,379 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>METRON System Architecture</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            padding: 40px;
+            background: #f5f5f5;
+        }
+        
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            background: white;
+            padding: 40px;
+            border-radius: 8px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+        }
+        
+        h1 {
+            text-align: center;
+            margin-bottom: 40px;
+            color: #1a1a1a;
+            font-size: 28px;
+        }
+        
+        .architecture {
+            position: relative;
+        }
+        
+        .layer {
+            margin-bottom: 60px;
+            position: relative;
+        }
+        
+        .layer-title {
+            font-size: 12px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            color: #666;
+            margin-bottom: 20px;
+            text-align: center;
+        }
+        
+        .boxes {
+            display: flex;
+            justify-content: center;
+            gap: 20px;
+            flex-wrap: wrap;
+            position: relative;
+        }
+        
+        .box {
+            border: 2px solid;
+            border-radius: 6px;
+            padding: 20px;
+            min-width: 180px;
+            max-width: 240px;
+            text-align: center;
+        }
+        
+        .box-title {
+            font-weight: 600;
+            font-size: 14px;
+            margin-bottom: 8px;
+        }
+        
+        .box-desc {
+            font-size: 12px;
+            color: #666;
+            line-height: 1.4;
+        }
+        
+        .user-layer .box { background: #fff; border-color: #3b82f6; }
+        .user-layer .box-title { color: #3b82f6; }
+        
+        .frontend-layer .box { background: #f0f9ff; border-color: #0284c7; }
+        .frontend-layer .box-title { color: #0284c7; }
+        
+        .backend-layer .box { background: #fef3c7; border-color: #d97706; }
+        .backend-layer .box-title { color: #d97706; }
+        
+        .services-layer .box { background: #f0fdf4; border-color: #16a34a; }
+        .services-layer .box-title { color: #16a34a; }
+        
+        .data-layer .box { background: #fce7f3; border-color: #db2777; }
+        .data-layer .box-title { color: #db2777; }
+        
+        .external-layer .box { background: #f3f4f6; border-color: #6b7280; }
+        .external-layer .box-title { color: #6b7280; }
+        
+        .pipeline {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-top: 30px;
+            padding: 20px;
+            background: #f9fafb;
+            border-radius: 6px;
+            border: 2px dashed #d1d5db;
+        }
+        
+        .stage {
+            text-align: center;
+            flex: 1;
+            padding: 10px;
+            font-size: 11px;
+            color: #4b5563;
+        }
+        
+        .stage-num {
+            display: block;
+            font-weight: 600;
+            margin-bottom: 4px;
+            color: #1f2937;
+        }
+        
+        .arrow {
+            color: #9ca3af;
+            font-size: 18px;
+        }
+        
+        .connection {
+            text-align: center;
+            font-size: 11px;
+            color: #6b7280;
+            margin: -40px 0 20px 0;
+            font-style: italic;
+        }
+        
+        .legend {
+            margin-top: 50px;
+            padding: 20px;
+            background: #f9fafb;
+            border-radius: 6px;
+            display: flex;
+            justify-content: center;
+            gap: 30px;
+            flex-wrap: wrap;
+        }
+        
+        .legend-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 12px;
+        }
+        
+        .legend-color {
+            width: 20px;
+            height: 20px;
+            border-radius: 3px;
+            border: 2px solid;
+        }
+        
+        .summary {
+            margin-top: 40px;
+            padding: 30px;
+            background: #f8fafc;
+            border-left: 4px solid #3b82f6;
+            border-radius: 4px;
+        }
+        
+        .summary h2 {
+            font-size: 18px;
+            margin-bottom: 15px;
+            color: #1e293b;
+        }
+        
+        .summary p {
+            font-size: 14px;
+            line-height: 1.8;
+            color: #475569;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>METRON — AI Application Testing Platform</h1>
+        
+        <div class="architecture">
+            
+            <div class="layer user-layer">
+                <div class="layer-title">User Interface</div>
+                <div class="boxes">
+                    <div class="box">
+                        <div class="box-title">User Browser</div>
+                        <div class="box-desc">Test engineers and developers</div>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="connection">↓ HTTP requests</div>
+            
+            <div class="layer frontend-layer">
+                <div class="layer-title">Frontend</div>
+                <div class="boxes">
+                    <div class="box">
+                        <div class="box-title">Next.js Application</div>
+                        <div class="box-desc">React UI with session-based state</div>
+                    </div>
+                    <div class="box">
+                        <div class="box-title">Configuration Manager</div>
+                        <div class="box-desc">Test setup and parameter controls</div>
+                    </div>
+                    <div class="box">
+                        <div class="box-title">Live Feed Poller</div>
+                        <div class="box-desc">Real-time execution monitoring</div>
+                    </div>
+                    <div class="box">
+                        <div class="box-title">Results Dashboard</div>
+                        <div class="box-desc">Health score and metrics visualization</div>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="connection">↓ REST API calls</div>
+            
+            <div class="layer backend-layer">
+                <div class="layer-title">Backend Core</div>
+                <div class="boxes">
+                    <div class="box">
+                        <div class="box-title">FastAPI Server</div>
+                        <div class="box-desc">Async HTTP server with job queue</div>
+                    </div>
+                    <div class="box">
+                        <div class="box-title">Pipeline Orchestrator</div>
+                        <div class="box-desc">8-stage execution coordinator</div>
+                    </div>
+                    <div class="box">
+                        <div class="box-title">LLM Client</div>
+                        <div class="box-desc">Multi-provider routing with rate limiting</div>
+                    </div>
+                    <div class="box">
+                        <div class="box-title">Adapter Layer</div>
+                        <div class="box-desc">Target endpoint protocol handlers</div>
+                    </div>
+                    <div class="box">
+                        <div class="box-title">Job Store</div>
+                        <div class="box-desc">In-memory run state and results</div>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="connection">↓ Async execution / HTTP requests</div>
+            
+            <div class="layer services-layer">
+                <div class="layer-title">Evaluation Services</div>
+                <div class="boxes">
+                    <div class="box">
+                        <div class="box-title">Presidio</div>
+                        <div class="box-desc">PII entity detection scanner</div>
+                    </div>
+                    <div class="box">
+                        <div class="box-title">Detoxify</div>
+                        <div class="box-desc">BERT toxicity classifier</div>
+                    </div>
+                    <div class="box">
+                        <div class="box-title">LLM Guard</div>
+                        <div class="box-desc">Prompt injection detector</div>
+                    </div>
+                    <div class="box">
+                        <div class="box-title">DeepEval</div>
+                        <div class="box-desc">Quality and hallucination metrics</div>
+                    </div>
+                    <div class="box">
+                        <div class="box-title">RAGAS</div>
+                        <div class="box-desc">RAG faithfulness evaluation</div>
+                    </div>
+                    <div class="box">
+                        <div class="box-title">Locust</div>
+                        <div class="box-desc">Load testing subprocess</div>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="connection">↓ Evaluation results</div>
+            
+            <div class="layer data-layer">
+                <div class="layer-title">Data Storage</div>
+                <div class="boxes">
+                    <div class="box">
+                        <div class="box-title">SessionStorage</div>
+                        <div class="box-desc">Client-side project configuration</div>
+                    </div>
+                    <div class="box">
+                        <div class="box-title">In-Memory Store</div>
+                        <div class="box-desc">Run logs and intermediate state</div>
+                    </div>
+                    <div class="box">
+                        <div class="box-title">File System</div>
+                        <div class="box-desc">Ground truth uploads and HTML reports</div>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="connection">↑ LLM API calls / ↓ Test requests</div>
+            
+            <div class="layer external-layer">
+                <div class="layer-title">External Services</div>
+                <div class="boxes">
+                    <div class="box">
+                        <div class="box-title">LLM Providers</div>
+                        <div class="box-desc">NVIDIA NIM, Azure OpenAI, Groq, Gemini</div>
+                    </div>
+                    <div class="box">
+                        <div class="box-title">Target AI Endpoint</div>
+                        <div class="box-desc">Application under test</div>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="pipeline">
+                <div class="stage"><span class="stage-num">S0</span>App Profile</div>
+                <span class="arrow">→</span>
+                <div class="stage"><span class="stage-num">S1</span>Personas</div>
+                <span class="arrow">→</span>
+                <div class="stage"><span class="stage-num">S2</span>Test Cases</div>
+                <span class="arrow">→</span>
+                <div class="stage"><span class="stage-num">S3</span>Execution</div>
+                <span class="arrow">→</span>
+                <div class="stage"><span class="stage-num">S4</span>Evaluation</div>
+                <span class="arrow">→</span>
+                <div class="stage"><span class="stage-num">S5</span>Aggregation</div>
+                <span class="arrow">→</span>
+                <div class="stage"><span class="stage-num">S6</span>Feedback Loop</div>
+                <span class="arrow">→</span>
+                <div class="stage"><span class="stage-num">S7</span>Report</div>
+            </div>
+            
+        </div>
+        
+        <div class="legend">
+            <div class="legend-item">
+                <div class="legend-color" style="background: #fff; border-color: #3b82f6;"></div>
+                <span>User Interface</span>
+            </div>
+            <div class="legend-item">
+                <div class="legend-color" style="background: #f0f9ff; border-color: #0284c7;"></div>
+                <span>Frontend Layer</span>
+            </div>
+            <div class="legend-item">
+                <div class="legend-color" style="background: #fef3c7; border-color: #d97706;"></div>
+                <span>Backend Core</span>
+            </div>
+            <div class="legend-item">
+                <div class="legend-color" style="background: #f0fdf4; border-color: #16a34a;"></div>
+                <span>Evaluation Services</span>
+            </div>
+            <div class="legend-item">
+                <div class="legend-color" style="background: #fce7f3; border-color: #db2777;"></div>
+                <span>Data Storage</span>
+            </div>
+            <div class="legend-item">
+                <div class="legend-color" style="background: #f3f4f6; border-color: #6b7280;"></div>
+                <span>External Services</span>
+            </div>
+        </div>
+        
+        <div class="summary">
+            <h2>Architecture Summary</h2>
+            <p>
+                METRON follows a <strong>layered monolithic architecture</strong> with clear separation between frontend presentation, backend orchestration, and evaluation services. The Next.js frontend maintains state in sessionStorage and polls the FastAPI backend via REST for execution progress, eliminating the need for WebSocket complexity or user authentication infrastructure. The backend runs an 8-stage async pipeline as a background task, coordinating persona generation, test execution against the target AI endpoint, and parallel evaluation across six specialized tools. All LLM calls route through a unified client with automatic fallback and rate limiting, supporting four providers with different cost-performance trade-offs. The system is <strong>stateless by design</strong> — no database persistence — enabling zero-dependency deployment at the cost of losing runs on server restart. Evaluation tools run synchronously in thread pools while the pipeline itself is fully async, maximizing throughput within provider rate limits. The architecture prioritizes <strong>transparency and debuggability</strong>: every stage logs events, every metric stores its reasoning, and the final report shows full conversation history with per-metric drill-down.
+            </p>
+        </div>
+        
+    </div>
+</body>
+</html>

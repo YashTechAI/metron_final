@@ -19,11 +19,15 @@ EMOTIONAL_STATES  = [e.value for e in EmotionalState]
 INTENT_TYPES      = [i.value for i in PersonaIntent]
 
 
-def build_slots(profile: AppProfile, num_personas: int = 6) -> List[Dict[str, str]]:
+def build_slots(profile: AppProfile, num_personas: int = 6, include_adversarial: bool = True) -> List[Dict[str, str]]:
     """
     Return a list of persona slot dicts, each containing:
       user_type, expertise, emotional_state, intent, goal_type
     Slots are domain-weighted (security domains → more adversarial, etc.)
+
+    include_adversarial: set False when security is not in the selected phases —
+      adversarial persona slots are skipped entirely, saving API calls and
+      keeping the live feed clean of security-adjacent conversations.
     """
     domain    = profile.domain.lower()
     user_types = profile.user_types or ["general user"]
@@ -32,7 +36,11 @@ def build_slots(profile: AppProfile, num_personas: int = 6) -> List[Dict[str, st
     # Domain-specific slot counts — adversarial count is now proportional to
     # num_personas so a small run (e.g. 3 personas) doesn't get flooded with
     # adversarial slots regardless of domain.
-    if domain in HIGH_SECURITY_DOMAINS:
+    if not include_adversarial:
+        adversarial_count = 0                            # security not selected — skip all adversarial
+        edge_case_count   = max(1, num_personas // 4)
+        emotional_count   = max(1, num_personas // 4)
+    elif domain in HIGH_SECURITY_DOMAINS:
         adversarial_count = max(1, num_personas // 2)   # up to 50% adversarial
         edge_case_count   = max(2, num_personas // 4)
         emotional_count   = max(1, num_personas // 4)
@@ -125,9 +133,10 @@ def build_slots(profile: AppProfile, num_personas: int = 6) -> List[Dict[str, st
         genuine     = [s for s in slots if s["intent"] == "genuine"]
         adversarial = [s for s in slots if s["intent"] == "adversarial"]
         edge        = [s for s in slots if s["intent"] == "edge_case"]
-        # Always keep at least 2 adversarial slots so attack_resistance + toxic_request run.
-        # Previous logic put genuine first → adversarial got trimmed away at num_personas=6.
-        adv_keep  = adversarial[:max(2, num_personas // 3)]
+        # Keep adversarial slots only when security is selected.
+        # When include_adversarial=False, adversarial_count is already 0 so
+        # adversarial list is empty — adv_keep stays [] naturally.
+        adv_keep  = adversarial[:max(2, num_personas // 3)] if include_adversarial else []
         remaining = num_personas - len(adv_keep)
         others    = (genuine + edge)[:remaining]
         slots     = others + adv_keep

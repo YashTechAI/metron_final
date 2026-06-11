@@ -52,11 +52,11 @@ LLM_PROVIDERS: Dict[str, Dict[str, Any]] = {
     "Google Gemini": {
         "prefix": "gemini",
         "models": {
-            "fast":     "gemini/gemini-2.0-flash",
-            "judge":    "gemini/gemini-2.0-flash",
-            "balanced": "gemini/gemini-2.0-flash",
+            "fast":     "gemini/gemini-2.5-flash",
+            "judge":    "gemini/gemini-2.5-flash",
+            "balanced": "gemini/gemini-2.5-flash",
         },
-        "default": "gemini/gemini-2.0-flash",
+        "default": "gemini/gemini-2.5-flash",
         "env_key": "GEMINI_API_KEY",
         "rpm": 60,
         "description": "Fast | 60 RPM | 1M tokens/day free",

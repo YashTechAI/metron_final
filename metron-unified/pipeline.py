@@ -223,11 +223,20 @@ async def run_pipeline(
         _mlflow_run.set_stage_tag(_mlflow_run_id, "s1")
         _update(job_store, run_id, 10, "Building persona coverage matrix…", "personas")
         _log(job_store, run_id, "phase_start", {"phase": "personas", "label": "Persona Generation"})
-        slots = build_slots(profile, num_personas=config.num_personas)
+        slots = build_slots(
+            profile,
+            num_personas=config.num_personas,
+            include_adversarial="security" in phases,
+        )
         personas = await build_all_personas(slots, profile, llm_client, project_id, tech_profile)
 
         # Coverage validation (adds up to 3 more slots if gaps found)
         extra_slots = await validate_and_fill(personas, profile, llm_client)
+        # Strip adversarial gap-fill slots when security is not in the selected phases.
+        # The validator's prompt allows "adversarial" intent — without this filter it
+        # injects adversarial personas even when only functional/quality/etc. is selected.
+        if "security" not in phases:
+            extra_slots = [s for s in extra_slots if s.get("intent") != "adversarial"]
         if extra_slots:
             extra_personas = await build_all_personas(extra_slots, profile, llm_client, project_id, tech_profile)
             personas.extend(extra_personas)
@@ -410,27 +419,28 @@ async def run_pipeline(
         func_results, sec_results, qual_results = await _run_evals_with_progress()
 
         # ── Garak adversarial probes ───────────────────────────────────────────
-        # Always runs — 17 curated probes concurrently after main eval.
-        # Results use superset="security" and merge into sec_results.
+        # Only runs when "security" is in the selected phases — skipped for
+        # functional-only, quality-only, performance-only, and load-only runs.
         garak_results: List[MetricResult] = []
-        _update(job_store, run_id, 73, "Running Garak adversarial probes (17 curated probes)…", "security")
-        _log(job_store, run_id, "phase_start", {"phase": "garak", "label": "Garak Adversarial Probes"})
-        try:
-            garak_results = await evaluate_garak(config, llm_client)
-            vuln_count = sum(1 for r in garak_results if not r.skipped and r.vulnerability_found)
-            _log(job_store, run_id, "garak_complete", {
-                "probes":          len(garak_results),
-                "vulnerabilities": vuln_count,
-            })
-            _update(
-                job_store, run_id, 74,
-                f"Garak: {len(garak_results)} probe(s) — {vuln_count} vulnerability/ies",
-                "security",
-                {"garak_probes": len(garak_results), "garak_vulns": vuln_count},
-            )
-        except Exception as _garak_err:
-            print(f"[Pipeline] Garak evaluation failed (non-fatal): {_garak_err}")
-            _update(job_store, run_id, 74, "Garak probes skipped", "security")
+        if "security" in phases:
+            _update(job_store, run_id, 73, "Running Garak adversarial probes (17 curated probes)…", "security")
+            _log(job_store, run_id, "phase_start", {"phase": "garak", "label": "Garak Adversarial Probes"})
+            try:
+                garak_results = await evaluate_garak(config, llm_client)
+                vuln_count = sum(1 for r in garak_results if not r.skipped and r.vulnerability_found)
+                _log(job_store, run_id, "garak_complete", {
+                    "probes":          len(garak_results),
+                    "vulnerabilities": vuln_count,
+                })
+                _update(
+                    job_store, run_id, 74,
+                    f"Garak: {len(garak_results)} probe(s) — {vuln_count} vulnerability/ies",
+                    "security",
+                    {"garak_probes": len(garak_results), "garak_vulns": vuln_count},
+                )
+            except Exception as _garak_err:
+                print(f"[Pipeline] Garak evaluation failed (non-fatal): {_garak_err}")
+                _update(job_store, run_id, 74, "Garak probes skipped", "security")
 
         sec_results = sec_results + garak_results
 
@@ -523,58 +533,64 @@ async def run_pipeline(
                     "quality":    {"count": len(qual_results),  "passed": sum(1 for r in qual_results if r.passed)},
                 })
 
-        # Stage 4: Performance evaluation
-        _update(job_store, run_id, 75, "Running performance tests…", "performance")
-        _log(job_store, run_id, "phase_start", {"phase": "performance", "label": "Performance Tests"})
-        perf_metrics = await evaluate_performance(config, run_id=run_id) if "performance" in phases else {
-            "total_requests": 0, "successful": 0, "errors": 0, "error_rate": 0.0,
-            "avg_latency_ms": 0.0, "min_latency_ms": 0.0, "max_latency_ms": 0.0,
-            "median_latency_ms": 0.0, "p95_latency_ms": 0.0, "p99_latency_ms": 0.0,
-            "throughput_rps": 0.0, "assessment": "skipped (role restriction)",
-        }
-        _log(job_store, run_id, "perf_complete", {
-            "avg_latency_ms": round(perf_metrics.get("avg_latency_ms", 0)),
-            "p95_latency_ms": round(perf_metrics.get("p95_latency_ms", 0)),
-            "p99_latency_ms": round(perf_metrics.get("p99_latency_ms", 0)),
-            "error_rate": round(perf_metrics.get("error_rate", 0), 1),
-            "throughput_rps": round(perf_metrics.get("throughput_rps", 0), 2),
-            "total_requests": perf_metrics.get("total_requests", 0),
-            "successful": perf_metrics.get("successful", 0),
-        })
-        _update(job_store, run_id, 82, f"Performance: p95={perf_metrics.get('p95_latency_ms', 0):.0f}ms",
-                "performance", perf_metrics)
+        # Stage 4: Performance evaluation — only run and log when "performance" is in phases
+        if "performance" in phases:
+            _update(job_store, run_id, 75, "Running performance tests…", "performance")
+            _log(job_store, run_id, "phase_start", {"phase": "performance", "label": "Performance Tests"})
+            perf_metrics = await evaluate_performance(config, run_id=run_id)
+            _log(job_store, run_id, "perf_complete", {
+                "avg_latency_ms": round(perf_metrics.get("avg_latency_ms", 0)),
+                "p95_latency_ms": round(perf_metrics.get("p95_latency_ms", 0)),
+                "p99_latency_ms": round(perf_metrics.get("p99_latency_ms", 0)),
+                "error_rate": round(perf_metrics.get("error_rate", 0), 1),
+                "throughput_rps": round(perf_metrics.get("throughput_rps", 0), 2),
+                "total_requests": perf_metrics.get("total_requests", 0),
+                "successful": perf_metrics.get("successful", 0),
+            })
+            _update(job_store, run_id, 82, f"Performance: p95={perf_metrics.get('p95_latency_ms', 0):.0f}ms",
+                    "performance", perf_metrics)
+        else:
+            perf_metrics = {
+                "total_requests": 0, "successful": 0, "errors": 0, "error_rate": 0.0,
+                "avg_latency_ms": 0.0, "min_latency_ms": 0.0, "max_latency_ms": 0.0,
+                "median_latency_ms": 0.0, "p95_latency_ms": 0.0, "p99_latency_ms": 0.0,
+                "throughput_rps": 0.0, "assessment": "skipped (role restriction)",
+            }
 
-        # Stage 4: Load evaluation
-        _update(job_store, run_id, 84, f"Running load test ({config.load_concurrent_users} concurrent users)…", "load")
-        _log(job_store, run_id, "phase_start", {"phase": "load", "label": f"Load Test — {config.load_concurrent_users} concurrent users"})
-        try:
-            load_metrics = await evaluate_load(config) if "load" in phases else {
+        # Stage 4: Load evaluation — only run and log when "load" is in phases
+        if "load" in phases:
+            _update(job_store, run_id, 84, f"Running load test ({config.load_concurrent_users} concurrent users)…", "load")
+            _log(job_store, run_id, "phase_start", {"phase": "load", "label": f"Load Test — {config.load_concurrent_users} concurrent users"})
+            try:
+                load_metrics = await evaluate_load(config)
+            except Exception as load_err:
+                print(f"[Pipeline] Load test failed: {load_err}")
+                load_metrics = {
+                    "tool_used": "locust", "concurrent_users": config.load_concurrent_users,
+                    "total_requests": 0, "successful": 0, "errors": 0,
+                    "error_rate": 0.0, "avg_latency_ms": 0.0, "p95_latency_ms": 0.0,
+                    "p99_latency_ms": 0.0, "requests_per_second": 0.0,
+                    "passed": False, "assessment": f"load test error: {str(load_err)[:100]}",
+                }
+            _log(job_store, run_id, "load_complete", {
+                "concurrent_users": load_metrics.get("concurrent_users", 0),
+                "total_requests": load_metrics.get("total_requests", 0),
+                "successful": load_metrics.get("successful", 0),
+                "error_rate": round(load_metrics.get("error_rate", 0), 1),
+                "avg_latency_ms": round(load_metrics.get("avg_latency_ms", 0)),
+                "p95_latency_ms": round(load_metrics.get("p95_latency_ms", 0)),
+                "requests_per_second": round(load_metrics.get("requests_per_second", 0), 2),
+                "assessment": load_metrics.get("assessment", ""),
+            })
+            _update(job_store, run_id, 89, f"Load: {load_metrics.get('requests_per_second', 0):.1f} RPS",
+                    "load", load_metrics)
+        else:
+            load_metrics = {
                 "tool_used": "locust", "concurrent_users": 0, "total_requests": 0,
                 "successful": 0, "errors": 0, "error_rate": 0.0, "avg_latency_ms": 0.0,
                 "p95_latency_ms": 0.0, "p99_latency_ms": 0.0, "requests_per_second": 0.0,
                 "passed": True, "assessment": "skipped (role restriction)",
             }
-        except Exception as load_err:
-            print(f"[Pipeline] Load test failed: {load_err}")
-            load_metrics = {
-                "tool_used": "locust", "concurrent_users": config.load_concurrent_users,
-                "total_requests": 0, "successful": 0, "errors": 0,
-                "error_rate": 0.0, "avg_latency_ms": 0.0, "p95_latency_ms": 0.0,
-                "p99_latency_ms": 0.0, "requests_per_second": 0.0,
-                "passed": False, "assessment": f"load test error: {str(load_err)[:100]}",
-            }
-        _log(job_store, run_id, "load_complete", {
-            "concurrent_users": load_metrics.get("concurrent_users", 0),
-            "total_requests": load_metrics.get("total_requests", 0),
-            "successful": load_metrics.get("successful", 0),
-            "error_rate": round(load_metrics.get("error_rate", 0), 1),
-            "avg_latency_ms": round(load_metrics.get("avg_latency_ms", 0)),
-            "p95_latency_ms": round(load_metrics.get("p95_latency_ms", 0)),
-            "requests_per_second": round(load_metrics.get("requests_per_second", 0), 2),
-            "assessment": load_metrics.get("assessment", ""),
-        })
-        _update(job_store, run_id, 89, f"Load: {load_metrics.get('requests_per_second', 0):.1f} RPS",
-                "load", load_metrics)
 
         # ── Stage 5: Aggregation ───────────────────────────────────────────
         llm_client._current_stage = "s5"

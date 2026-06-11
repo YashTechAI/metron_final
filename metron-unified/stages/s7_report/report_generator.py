@@ -41,9 +41,13 @@ def report_to_json(report: AggregatedReport) -> Dict[str, Any]:
 _FULL_RUN_ROLES = {"all", "tenant_admin", "super_admin"}
 
 
+_RQ_ONLY_ROLES = {"performance", "load", "performance+load"}
+
+
 def generate_html_report(report: AggregatedReport, user_role: str = "all") -> str:
     """Generate a styled HTML report string."""
     is_full_run = user_role in _FULL_RUN_ROLES
+    is_rq_only  = user_role in _RQ_ONLY_ROLES   # perf/load — totals are HTTP request counts
     pct = int(report.health_score * 100)
     label = "Excellent" if pct >= 85 else "Good" if pct >= 70 else "Fair" if pct >= 55 else "Poor"
     color = _HEALTH_COLOR.get(label.lower(), "#666")
@@ -138,10 +142,11 @@ def generate_html_report(report: AggregatedReport, user_role: str = "all") -> st
             f'<div style="font-size:13px;opacity:0.6">{passed_status}</div></div></div>'
         )
     else:
+        _score_label = "Requests Passed" if is_rq_only else "Tests Passed"
         _health_hero = (
             f'<div style="display:flex;align-items:center;gap:16px;margin-bottom:16px">'
             f'<span class="health-score" style="color:#00668a">{report.total_passed}/{report.total_tests}</span>'
-            f'<div><div class="health-label" style="color:#00668a">Tests Passed</div>'
+            f'<div><div class="health-label" style="color:#00668a">{_score_label}</div>'
             f'<div style="font-size:13px;opacity:0.6">{role_label} run</div></div></div>'
         )
 
@@ -185,7 +190,7 @@ def generate_html_report(report: AggregatedReport, user_role: str = "all") -> st
       {_health_hero}
       <div class="meta-grid">
         <div class="meta-item">
-          <div class="label">Total Tests</div>
+          <div class="label">{'Total Requests' if is_rq_only else 'Total Tests'}</div>
           <div class="value">{report.total_tests}</div>
         </div>
         <div class="meta-item">

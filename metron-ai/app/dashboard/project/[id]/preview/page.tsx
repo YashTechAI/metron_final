@@ -387,10 +387,10 @@ export default function PreviewPage() {
                   onClick={() => toggleScenario(s.id)}
                   className="w-full flex items-center justify-between p-4 text-left hover:bg-[var(--color-surface-container-low)] transition-colors"
                 >
-                  <div className="flex items-center gap-3">
-                    <span className="material-symbols-outlined text-base text-primary">assignment</span>
-                    <div>
-                      <p className="text-sm font-black">{s.name}</p>
+                  <div className="flex items-center gap-3 min-w-0">
+                    <span className="material-symbols-outlined text-base text-primary flex-shrink-0">assignment</span>
+                    <div className="min-w-0">
+                      <p className="text-sm font-black truncate">{s.name}</p>
                       <span className="text-[10px] px-2 py-0.5 rounded-full bg-[var(--color-surface-container-low)] text-[var(--color-on-surface-variant)] border border-[var(--color-outline-variant)]">{s.category}</span>
                     </div>
                   </div>
@@ -408,7 +408,7 @@ export default function PreviewPage() {
                       </div>
                       <div className="p-3 rounded-lg bg-[var(--color-surface-container-low)]">
                         <p className="text-[10px] font-bold uppercase tracking-wider text-[var(--color-on-surface-variant)] opacity-60 mb-1">Expected Behavior</p>
-                        <p className="text-xs">{s.expected_behavior}</p>
+                        <p className="text-xs">{s.expected_behavior || "—"}</p>
                       </div>
                     </div>
                   </div>

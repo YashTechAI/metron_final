@@ -165,9 +165,9 @@ function TestPromptCard({ content }: { content: Record<string, unknown> }) {
           )}
         </div>
         <p className="text-xs font-medium text-[var(--color-on-surface)] leading-relaxed">"{content.text as string}"</p>
-        {!isSecure && !!content.expected_behavior && (
+        {!isSecure && (
           <p className="text-[10px] text-[var(--color-on-surface-variant)] opacity-60 mt-1.5">
-            Expected: {content.expected_behavior as string}
+            Expected: {(content.expected_behavior as string) || "—"}
           </p>
         )}
       </div>

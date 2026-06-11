@@ -335,8 +335,8 @@ async def preview(req: PreviewRequest, request: Request):
         for pr in prompts[:2]:
             scenarios.append({
                 "id":               pr.prompt_id,
-                "name":             f"{p.name} — {p.goal[:40]}",
-                "description":      f"Test for {p.expertise.value} {p.user_type}",
+                "name":             p.name,
+                "description":      f"{p.goal[:80]} · Test for {p.expertise.value} {p.user_type}",
                 "initial_prompt":   pr.text,
                 "expected_behavior": pr.expected_behavior or "",
                 "category":         "functional",

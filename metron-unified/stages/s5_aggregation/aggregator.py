@@ -100,6 +100,26 @@ def aggregate(
     total_passed   = sum(1 for r in non_skipped if r.passed)
     total_failed   = total_tests - total_passed
 
+    # For performance/load-only runs no MetricResult objects are produced, so
+    # total_tests stays 0 and the score card shows "0/0".  Fall back to the
+    # HTTP request counts so the score card shows something meaningful (e.g.
+    # "95/100 Tests Passed" for a performance run with 5 failures).
+    if total_tests == 0:
+        if performance_metrics:
+            _pt = performance_metrics.get("total_requests", 0)
+            _pp = performance_metrics.get("successful", 0)
+            if _pt > 0:
+                total_tests  += _pt
+                total_passed += _pp
+                total_failed += _pt - _pp
+        if load_metrics:
+            _lt = load_metrics.get("total_requests", 0)
+            _lp = load_metrics.get("successful", 0)
+            if _lt > 0:
+                total_tests  += _lt
+                total_passed += _lp
+                total_failed += _lt - _lp
+
     # ── Cross-class evaluation warnings (Fix 36) ──────────────────────────────
     evaluation_warnings: List[str] = []
     for cls_name, summary in test_classes.items():

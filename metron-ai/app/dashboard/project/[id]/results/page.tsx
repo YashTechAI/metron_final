@@ -507,9 +507,11 @@ function ResultsContent() {
 
 
     const isFullRunMd = ["all", "tenant_admin", "super_admin"].includes(r.user_role ?? "all");
+    const _mdRole = (r.user_role ?? "");
+    const _mdRqOnly = !_mdRole.includes("functional") && !_mdRole.includes("security") && !_mdRole.includes("quality") && _mdRole !== "all";
     const scoreLineMd = isFullRunMd
       ? `Health Score: ${(r.health_score * 100).toFixed(1)}% | ${r.passed ? "PASSED" : "FAILED"}`
-      : `Tests Passed: ${r.total_passed}/${r.total_tests} | ${(r.user_role ?? "").replace(/_/g, " ")} run`;
+      : `${_mdRqOnly ? "Requests" : "Tests"} Passed: ${r.total_passed}/${r.total_tests} | ${_mdRole.replace(/_/g, " ")} run`;
 
     const summaryRows = [
       (r.functional?.total ?? 0) > 0 ? `| Functional | ${r.functional!.passed} | ${r.functional!.total} | ${r.functional!.pass_rate}% |` : null,
@@ -622,25 +624,31 @@ ${loadSection}`;
         </div>
 
         {/* Score card — health score for full runs, passed/total for partial */}
-        <div className="card p-6 flex flex-col items-center gap-2 min-w-[140px]">
-          {isFullRun ? (
-            <>
-              <p className="text-xs font-bold uppercase tracking-widest text-[var(--color-on-surface-variant)] opacity-60">Health Score</p>
-              <p className={`font-headline text-5xl font-black ${healthColor}`}>{healthPct}%</p>
-              <span className={`text-xs font-bold px-3 py-1 rounded-full ${results.passed ? "badge-pass" : "badge-fail"}`}>
-                {results.passed ? "PASSED" : "FAILED"}
-              </span>
-            </>
-          ) : (
-            <>
-              <p className="text-xs font-bold uppercase tracking-widest text-[var(--color-on-surface-variant)] opacity-60">Tests Passed</p>
-              <p className="font-headline text-5xl font-black text-primary">{results.total_passed}/{results.total_tests}</p>
-              <span className="text-xs font-bold text-[var(--color-on-surface-variant)] opacity-60 capitalize">
-                {(results.user_role ?? "").replace(/_/g, " ")}
-              </span>
-            </>
-          )}
-        </div>
+        {(() => {
+          const _isRqOnly = !activePhases.has("functional") && !activePhases.has("security") && !activePhases.has("quality");
+          const _scoreLabel = _isRqOnly ? "Requests Passed" : "Tests Passed";
+          return (
+            <div className="card p-6 flex flex-col items-center gap-2 min-w-[140px]">
+              {isFullRun ? (
+                <>
+                  <p className="text-xs font-bold uppercase tracking-widest text-[var(--color-on-surface-variant)] opacity-60">Health Score</p>
+                  <p className={`font-headline text-5xl font-black ${healthColor}`}>{healthPct}%</p>
+                  <span className={`text-xs font-bold px-3 py-1 rounded-full ${results.passed ? "badge-pass" : "badge-fail"}`}>
+                    {results.passed ? "PASSED" : "FAILED"}
+                  </span>
+                </>
+              ) : (
+                <>
+                  <p className="text-xs font-bold uppercase tracking-widest text-[var(--color-on-surface-variant)] opacity-60">{_scoreLabel}</p>
+                  <p className="font-headline text-5xl font-black text-primary">{results.total_passed}/{results.total_tests}</p>
+                  <span className="text-xs font-bold text-[var(--color-on-surface-variant)] opacity-60 capitalize">
+                    {(results.user_role ?? "").replace(/_/g, " ")}
+                  </span>
+                </>
+              )}
+            </div>
+          );
+        })()}
       </div>
 
       {/* Summary Cards — only show phases that were run */}
