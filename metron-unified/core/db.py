@@ -284,7 +284,7 @@ def get_run(run_id: str) -> Optional[Dict[str, Any]]:
             conn.close()
 
 
-def get_runs_for_project(project_id: str, limit: int = 50) -> List[Dict[str, Any]]:
+def get_runs_for_project(project_id: str, limit: int = 200) -> List[Dict[str, Any]]:
     """
     Return all runs for a project, sorted newest-first.
     results_json is NOT decoded (summary only) — call get_run() for full results.

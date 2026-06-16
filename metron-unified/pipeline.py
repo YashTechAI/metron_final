@@ -13,13 +13,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from core import db as _db
-import core.mlflow_run as _mlflow_run
 from core.notifications import notify_run_complete, notify_run_failed
-
-_mlflow_run.configure(
-    tracking_uri=os.environ.get("MLFLOW_TRACKING_URI", ""),
-    experiment_name=os.environ.get("MLFLOW_EXPERIMENT_NAME", "metron-llmops"),
-)
 
 # Per-run locks prevent concurrent pipeline stages from overwriting each other's
 # job_store state when multiple runs execute simultaneously.
@@ -166,19 +160,9 @@ async def run_pipeline(
         bedrock_model_id=getattr(config, "bedrock_model_id", "") or "",
     )
 
-    _mlflow_run_id = _mlflow_run.start_run(
-        metron_run_id=run_id,
-        project_id=project_id,
-        domain=config.agent_domain,
-        provider=config.llm_provider,
-        num_personas=config.num_personas,
-    )
-    llm_client._mlflow_run_id = _mlflow_run_id or ""
-
     try:
         # ── Stage 0: App Profile ───────────────────────────────────────────
         llm_client._current_stage = "s0"
-        _mlflow_run.set_stage_tag(_mlflow_run_id, "s0")
         _update(job_store, run_id, 5, "Analyzing agent profile…", "profiling")
         if doc_text.strip():
             profile = await parse_document(doc_text, llm_client, project_id)
@@ -220,7 +204,6 @@ async def run_pipeline(
 
         # ── Stage 1: Persona Generation (Fishbone) ─────────────────────────
         llm_client._current_stage = "s1"
-        _mlflow_run.set_stage_tag(_mlflow_run_id, "s1")
         _update(job_store, run_id, 10, "Building persona coverage matrix…", "personas")
         _log(job_store, run_id, "phase_start", {"phase": "personas", "label": "Persona Generation"})
         slots = build_slots(
@@ -257,7 +240,6 @@ async def run_pipeline(
 
         # ── Stage 2: Domain-Specific Test Generation ───────────────────────
         llm_client._current_stage = "s2"
-        _mlflow_run.set_stage_tag(_mlflow_run_id, "s2")
         _update(job_store, run_id, 20, "Generating domain-specific test prompts…", "test_gen")
         _log(job_store, run_id, "phase_start", {"phase": "test_gen", "label": "Test Generation"})
 
@@ -324,7 +306,6 @@ async def run_pipeline(
 
         # ── Stage 3+4: Execution + Evaluation (interleaved) ────────────────
         llm_client._current_stage = "s3"
-        _mlflow_run.set_stage_tag(_mlflow_run_id, "s3")
         _update(job_store, run_id, 28, "Running conversations with target AI…", "execution")
         _log(job_store, run_id, "phase_start", {"phase": "execution", "label": "Running Conversations"})
 
@@ -357,7 +338,6 @@ async def run_pipeline(
         # Azure call) so they cannot hang forever. Progress ticks every ~10s so the UI
         # always shows movement even while evaluation is running.
         llm_client._current_stage = "s4"
-        _mlflow_run.set_stage_tag(_mlflow_run_id, "s4")
         _update(job_store, run_id, 58, "Evaluating results (functional + security + quality in parallel)…", "functional")
         _log(job_store, run_id, "phase_start", {"phase": "evaluation", "label": "Evaluating Results"})
 
@@ -594,7 +574,6 @@ async def run_pipeline(
 
         # ── Stage 5: Aggregation ───────────────────────────────────────────
         llm_client._current_stage = "s5"
-        _mlflow_run.set_stage_tag(_mlflow_run_id, "s5")
         _update(job_store, run_id, 90, "Aggregating results…", "aggregation")
         report = aggregate(
             metric_results=all_metric_results,
@@ -611,7 +590,6 @@ async def run_pipeline(
 
         # ── Stage 8: Root Cause Analysis ──────────────────────────────────
         llm_client._current_stage = "s8"
-        _mlflow_run.set_stage_tag(_mlflow_run_id, "s8")
         _update(job_store, run_id, 94, "Running root cause analysis…", "rca")
         _log(job_store, run_id, "phase_start", {"phase": "rca", "label": "Root Cause Analysis"})
         try:
@@ -677,7 +655,6 @@ async def run_pipeline(
 
         # ── Stage 7: Report Generation ─────────────────────────────────────
         llm_client._current_stage = "s7"
-        _mlflow_run.set_stage_tag(_mlflow_run_id, "s7")
         _update(job_store, run_id, 97, "Generating report…", "report")
         _log(job_store, run_id, "phase_start", {"phase": "report", "label": "Generating Report"})
         report.report_html = generate_html_report(report, user_role=user_role)
@@ -806,11 +783,12 @@ async def run_pipeline(
         _full_run_roles = {"all", "tenant_admin", "super_admin"}
         _is_full_run = user_role in _full_run_roles
 
-        # ── Token tracking: write to MLflow, read back, persist to metron_runs.db ─
+        # ── Token tracking: write to MLflow, read back, store in memory ─────────
         _calls      = llm_client._token_totals["calls"]
         _prompt     = llm_client._token_totals["prompt"]
         _completion = llm_client._token_totals["completion"]
         _total      = _prompt + _completion
+        _token_summary = None   # populated below; persisted to DB after save_run()
 
         if _total > 0 or _calls > 0:
             _latency_ms  = llm_client._token_totals["latency_ms"]
@@ -819,52 +797,34 @@ async def run_pipeline(
             _truncated   = llm_client._token_totals["truncated_calls"]
             _duration_s  = time.monotonic() - llm_client._pipeline_start
 
-            if _mlflow_run_id:
-                # MLflow configured — write metrics to MLflow, read back as source of truth
-                _mlflow_run.log_token_metrics(
-                    mlflow_run_id=_mlflow_run_id,
-                    prompt_tokens=_prompt,
-                    completion_tokens=_completion,
-                    total_tokens=_total,
-                    calls=_calls,
-                    cost_usd=_cost_usd,
-                    latency_ms=_latency_ms,
-                    by_stage=llm_client._stage_totals,
-                    retry_count=_retry_count,
-                    truncated_calls=_truncated,
-                    models_used=llm_client._models_used,
-                    pipeline_duration_s=_duration_s,
-                )
-                _token_summary = _mlflow_run.read_token_summary(_mlflow_run_id)
-            else:
-                # MLflow not configured — build summary directly from Python accumulators
-                _token_summary = {
-                    "total_calls":             _calls,
-                    "total_prompt_tokens":     _prompt,
-                    "total_completion_tokens": _completion,
-                    "total_tokens":            _total,
-                    "estimated_cost_usd":      round(_cost_usd, 6),
-                    "avg_latency_ms":          round(_latency_ms / _calls, 1) if _calls else 0.0,
-                    "tpot_ms":                 round(_latency_ms / _completion, 2) if _completion else 0.0,
-                    "token_efficiency_ratio":  round(_completion / _prompt, 4) if _prompt else 0.0,
-                    "tpm_velocity":            round((_total / _duration_s) * 60, 1) if _duration_s else 0.0,
-                    "retry_count":             _retry_count,
-                    "truncated_calls":         _truncated,
-                    "truncation_rate":         round(_truncated / _calls, 4) if _calls else 0.0,
-                    "models_used":             dict(llm_client._models_used),
-                    "by_stage":                dict(llm_client._stage_totals),
-                }
+            # Build summary from Python accumulators — always available regardless of MLflow
+            _py_summary = {
+                "total_calls":             _calls,
+                "total_prompt_tokens":     _prompt,
+                "total_completion_tokens": _completion,
+                "total_tokens":            _total,
+                "estimated_cost_usd":      round(_cost_usd, 6),
+                "avg_latency_ms":          round(_latency_ms / _calls, 1) if _calls else 0.0,
+                "tpot_ms":                 round(_latency_ms / _completion, 2) if _completion else 0.0,
+                "token_efficiency_ratio":  round(_completion / _prompt, 4) if _prompt else 0.0,
+                "tpm_velocity":            round((_total / _duration_s) * 60, 1) if _duration_s else 0.0,
+                "retry_count":             _retry_count,
+                "truncated_calls":         _truncated,
+                "truncation_rate":         round(_truncated / _calls, 4) if _calls else 0.0,
+                "models_used":             dict(llm_client._models_used),
+                "by_stage":                dict(llm_client._stage_totals),
+            }
+
+            _token_summary = _py_summary
 
             if _token_summary and _token_summary.get("total_tokens", 0) > 0:
                 job_store[run_id]["token_summary"] = _token_summary
-                _db.save_token_summary(run_id, _token_summary)
                 _log(job_store, run_id, "token_summary", {
                     "total_tokens":       _token_summary["total_tokens"],
                     "estimated_cost_usd": _token_summary["estimated_cost_usd"],
                     "avg_latency_ms":     _token_summary["avg_latency_ms"],
                     "by_stage":           _token_summary["by_stage"],
                 })
-        _mlflow_run.end_run(_mlflow_run_id, "FINISHED")
         job_store[run_id]["status"]   = "completed"
         job_store[run_id]["progress"] = 100
         job_store[run_id]["message"]  = (
@@ -889,6 +849,14 @@ async def run_pipeline(
             )
         except Exception as db_err:
             print(f"[Pipeline] DB save failed (non-fatal): {db_err}")
+
+        # Persist token summary AFTER save_run() — save_run uses INSERT OR REPLACE
+        # which would wipe token_summary_json if we called save_token_summary() first.
+        if _token_summary and _token_summary.get("total_tokens", 0) > 0:
+            try:
+                _db.save_token_summary(run_id, _token_summary)
+            except Exception as _ts_err:
+                print(f"[Pipeline] save_token_summary failed (non-fatal): {_ts_err}")
 
         # ── Email notification — run completed ────────────────────────────────
         if getattr(config, "notify_email", False) and user_email:
@@ -915,7 +883,6 @@ async def run_pipeline(
         job_store[run_id]["message"] = f"Pipeline failed: {str(e)[:200]}"
         print(f"[Pipeline ERROR] {run_id}: {traceback.format_exc()}")
         _job_locks.pop(run_id, None)
-        _mlflow_run.end_run(_mlflow_run_id, "FAILED")
         try:
             _db.mark_run_failed(run_id, str(e))
         except Exception as _db_fail_err:

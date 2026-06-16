@@ -1585,7 +1585,7 @@ function LLMOpsTab({ data }: { data: TokenSummary | null }) {
       <div className="py-16 text-center space-y-3">
         <span className="material-symbols-outlined text-4xl text-[var(--color-on-surface-variant)] opacity-30">monitoring</span>
         <p className="text-sm font-semibold text-[var(--color-on-surface-variant)] opacity-60">No LLM usage data available</p>
-        <p className="text-xs text-[var(--color-on-surface-variant)] opacity-40">Set MLFLOW_TRACKING_URI on the backend to enable token tracking.</p>
+        <p className="text-xs text-[var(--color-on-surface-variant)] opacity-40">Token data will appear here after a pipeline run completes.</p>
       </div>
     );
   }

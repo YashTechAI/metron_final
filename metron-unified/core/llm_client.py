@@ -104,7 +104,6 @@ class LLMClient:
 
         # Token management — set by pipeline before each stage
         self._current_stage: str = "unknown"
-        self._mlflow_run_id: str = ""
 
         # Lightweight TPM window for Azure (list of (monotonic_ts, tokens) tuples)
         self._tpm_window: list = []
@@ -324,15 +323,6 @@ class LLMClient:
             st["calls"]        += 1
             st["total_tokens"] += p + c
             st["cost_usd"]     += cost
-
-        # Tag this span with the pipeline stage — best-effort, never blocks
-        try:
-            import mlflow
-            active_span = mlflow.get_current_active_span()
-            if active_span:
-                active_span.set_attribute("pipeline.stage", self._current_stage)
-        except Exception:
-            pass
 
         return response.choices[0].message.content or ""
 

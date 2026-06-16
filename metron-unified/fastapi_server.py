@@ -27,7 +27,6 @@ from core.models import (
 )
 from core.adapters.chatbot import ChatbotAdapter
 from core import db as _db
-import core.mlflow_run as _mlflow_run
 from pipeline import run_pipeline
 from stages.s0_profile.document_parser import parse_document
 from stages.s0_profile.architecture_parser import parse_architecture_text, parse_architecture_image
@@ -85,11 +84,6 @@ async def _reap_stuck_jobs():
 @app.on_event("startup")
 async def _startup():
     """Init DB and re-populate in-memory jobs from recent completed/failed runs."""
-    _mlflow_run.configure(
-        tracking_uri=os.environ.get("MLFLOW_TRACKING_URI", ""),
-        experiment_name=os.environ.get("MLFLOW_EXPERIMENT_NAME", "metron-llmops"),
-    )
-    _mlflow_run.setup_autolog()
     try:
         _db.init_db()
         for row in _db.load_recent_jobs(hours=24):
