@@ -46,10 +46,5 @@ If ground truth is properly loaded:
 3. Results should show prompts that are **EXACT questions from your CSV**
 4. NOT LLM-generated HR questions
 
-## Current Issues Identified
-1. ✅ Async FileReader race condition = FIXED
-2. ✅ Feedback loop missing ground_truth = FIXED
-3. ✅ Azure endpoint normalization = FIXED
-4. ❌ **RAG Knowledge Base limited to 800 chars** = NEEDS FIX
-5. ❌ Ground truth file may not be uploading/parsing = TEST REQUIRED
+ 
 
