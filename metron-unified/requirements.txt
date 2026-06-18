@@ -11,6 +11,14 @@ aiohttp>=3.9.0
 # ── LLM routing ─────────────────────────────────────────────────────────────
 litellm>=1.30.0
 
+# ── Database: async SQLAlchemy ORM + migrations ──────────────────────────────
+# Production: Postgres via asyncpg. Local dev fallback: SQLite via aiosqlite.
+sqlalchemy[asyncio]>=2.0.0
+asyncpg>=0.29.0            # async Postgres driver (app + alembic online)
+aiosqlite>=0.19.0         # async SQLite driver (local dev fallback)
+psycopg2-binary>=2.9.0    # sync Postgres driver (alembic offline / --sql only)
+pydantic-settings>=2.0.0  # DatabaseSettings (.env -> database_url)
+
 # ── LLMOps: token tracking + traces via MLflow ───────────────────────────────
 mlflow-skinny>=2.13.0
 alembic>=1.13.0

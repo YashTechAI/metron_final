@@ -1,10 +1,14 @@
 """
-Core configuration: LLM providers, rate limits, token budgets.
+Core configuration: LLM providers, rate limits, token budgets, database.
 Sourced from existing METRON backend (app_v3.py LLM_PROVIDERS dict).
 """
 
 import os
+from functools import lru_cache
 from typing import Dict, Any
+from urllib.parse import quote_plus
+
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # ── LLM Provider Registry ──────────────────────────────────────────────────
 LLM_PROVIDERS: Dict[str, Dict[str, Any]] = {
@@ -171,3 +175,64 @@ def get_token_budget(provider_name: str, task: str = "normal") -> int:
     if task == "large":
         return TOKEN_BUDGET_LARGE
     return TOKEN_BUDGET_NORMAL
+
+
+# ── Database settings ───────────────────────────────────────────────────────
+# Production: set DB_HOST/DB_USER/DB_PASSWORD/DB_PORT/DB_NAME (Postgres / Supabase).
+# Local dev:  leave DB_HOST blank — falls back to async SQLite at METRON_DB_PATH
+#             (or ../metron_runs.db), so nothing changes for local work.
+_SQLITE_DEFAULT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "metron_runs.db"))
+
+
+class DatabaseSettings(BaseSettings):
+    model_config = SettingsConfigDict(
+        env_file=".env", env_file_encoding="utf-8", extra="ignore", case_sensitive=False
+    )
+
+    db_user: str = ""
+    db_password: str = ""
+    db_host: str = ""
+    db_port: int = 5432
+    db_name: str = "postgres"
+
+    # asyncpg prepared-statement cache. Keep at 0 when going through a connection
+    # pooler in transaction mode (Supabase/PgBouncer Supavisor) to avoid
+    # "prepared statement already exists" errors. Harmless on direct connections.
+    db_statement_cache_size: int = 0
+
+    @property
+    def is_postgres(self) -> bool:
+        return bool(self.db_host)
+
+    @property
+    def _sqlite_path(self) -> str:
+        return os.environ.get("METRON_DB_PATH", _SQLITE_DEFAULT).replace("\\", "/")
+
+    @property
+    def database_url(self) -> str:
+        """Async SQLAlchemy URL used by the running app."""
+        if self.is_postgres:
+            user = quote_plus(self.db_user)
+            password = quote_plus(self.db_password)
+            return (
+                f"postgresql+asyncpg://{user}:{password}"
+                f"@{self.db_host}:{self.db_port}/{self.db_name}"
+            )
+        return f"sqlite+aiosqlite:///{self._sqlite_path}"
+
+    @property
+    def sync_database_url(self) -> str:
+        """Sync URL (Alembic offline mode, one-off scripts)."""
+        if self.is_postgres:
+            user = quote_plus(self.db_user)
+            password = quote_plus(self.db_password)
+            return (
+                f"postgresql+psycopg2://{user}:{password}"
+                f"@{self.db_host}:{self.db_port}/{self.db_name}"
+            )
+        return f"sqlite:///{self._sqlite_path}"
+
+
+@lru_cache
+def get_settings() -> DatabaseSettings:
+    return DatabaseSettings()

@@ -73,7 +73,7 @@ async def _reap_stuck_jobs():
                         job["message"] = f"Timed out ({_PIPELINE_TIMEOUT_MINUTES} min limit)"
                         print(f"[Reaper] Timed out run {run_id}")
                         try:
-                            _db.mark_run_failed(run_id, msg)
+                            await _db.mark_run_failed(run_id, msg)
                         except Exception:
                             pass
                 except Exception:
@@ -91,8 +91,8 @@ async def _startup():
     )
     _mlflow_run.setup_autolog()
     try:
-        _db.init_db()
-        for row in _db.load_recent_jobs(hours=24):
+        await _db.init_db()
+        for row in await _db.load_recent_jobs(hours=24):
             run_id = row["run_id"]
             is_failed = row["status"] == "failed"
             jobs[run_id] = {
@@ -210,7 +210,7 @@ async def get_tools_status():
 # ──────────────────────────────────────────────────────────────────────────
 @app.post("/api/connect-test")
 async def connect_test(req: ConnectTestRequest, request: Request):
-    get_current_user(request)
+    await get_current_user(request)
     adapter = ChatbotAdapter(
         endpoint_url=req.endpoint_url,
         request_field=req.request_field,
@@ -229,7 +229,7 @@ async def connect_test(req: ConnectTestRequest, request: Request):
 # ──────────────────────────────────────────────────────────────────────────
 @app.post("/api/parse-document")
 async def parse_document_endpoint(req: ParseDocumentRequest, request: Request):
-    get_current_user(request)
+    await get_current_user(request)
     if not req.document_text.strip():
         raise HTTPException(400, "document_text is required")
     if not _has_credentials(req):
@@ -268,7 +268,7 @@ async def parse_architecture_endpoint(
     llm_api_key:    str           = Form(""),
     azure_endpoint: str           = Form(""),
 ):
-    get_current_user(request)
+    await get_current_user(request)
     """
     Parse an architecture document (text) or diagram (image) and return
     structured architecture fields ready to populate the configure form.
@@ -301,7 +301,7 @@ async def parse_architecture_endpoint(
 # ──────────────────────────────────────────────────────────────────────────
 @app.post("/api/preview")
 async def preview(req: PreviewRequest, request: Request):
-    get_current_user(request)
+    await get_current_user(request)
     if not req.agent_description.strip():
         raise HTTPException(400, "agent_description is required")
     if not _has_credentials(req):
@@ -372,7 +372,7 @@ async def run_tests(
     document: Optional[UploadFile] = File(None),
     ground_truth_file: Optional[UploadFile] = File(None),
 ):
-    user = get_current_user(request)
+    user = await get_current_user(request)
     import json, csv, io
     try:
         config_data = json.loads(config)
@@ -484,7 +484,7 @@ async def run_tests(
             doc_text = ""
 
     # ── Quota gate — check BEFORE creating the job ────────────────────────
-    quota_ok, quota_reason = _db.try_consume_quota(user["email"])
+    quota_ok, quota_reason = await _db.try_consume_quota(user["email"])
     if not quota_ok:
         raise HTTPException(status_code=429, detail=quota_reason)
 
@@ -536,11 +536,11 @@ async def run_tests(
 # ──────────────────────────────────────────────────────────────────────────
 @app.get("/api/job/{run_id}/status")
 async def get_job_status(run_id: str, request: Request):
-    user = get_current_user(request)
+    user = await get_current_user(request)
     job = jobs.get(run_id)
     if not job:
         # Fall back to DB for runs that completed before last restart
-        db_row = _db.get_run(run_id)
+        db_row = await _db.get_run(run_id)
         if db_row:
             owner = db_row.get("user_email", "")
             if owner and owner != user["email"]:
@@ -576,11 +576,11 @@ async def get_job_status(run_id: str, request: Request):
 # ──────────────────────────────────────────────────────────────────────────
 @app.get("/api/job/{run_id}/results")
 async def get_job_results(run_id: str, request: Request):
-    user = get_current_user(request)
+    user = await get_current_user(request)
     job = jobs.get(run_id)
     if not job:
         # Fall back to DB
-        db_row = _db.get_run(run_id)
+        db_row = await _db.get_run(run_id)
         if db_row:
             owner = db_row.get("user_email", "")
             if owner and owner != user["email"]:
@@ -601,7 +601,7 @@ async def get_job_results(run_id: str, request: Request):
 # ──────────────────────────────────────────────────────────────────────────
 @app.get("/api/job/{run_id}/token-summary")
 async def get_token_summary(run_id: str, request: Request):
-    user = get_current_user(request)
+    user = await get_current_user(request)
     job = jobs.get(run_id)
 
     # Try in-memory first, then fall back to DB (survives server restarts)
@@ -609,7 +609,7 @@ async def get_token_summary(run_id: str, request: Request):
         _check_job_ownership(job, user["email"])
         summary = job.get("token_summary")
     else:
-        summary = _db.get_token_summary(run_id)
+        summary = await _db.get_token_summary(run_id)
 
     if summary and summary.get("total_tokens", 0) > 0:
         return summary
@@ -639,16 +639,16 @@ async def health():
 # ──────────────────────────────────────────────────────────────────────────
 @app.get("/api/project/{project_id}/runs")
 async def get_project_runs(project_id: str, request: Request):
-    user = get_current_user(request)
+    user = await get_current_user(request)
     """Return all runs for a project: DB rows + any in-memory runs not yet persisted."""
     # Verify the project belongs to the requesting user
-    project = _db.get_project(project_id)
+    project = await _db.get_project(project_id)
     if not project:
         raise HTTPException(404, "Project not found")
     if project.get("user_email") != user["email"]:
         raise HTTPException(403, "Not your project")
     try:
-        db_runs = _db.get_runs_for_project(project_id)
+        db_runs = await _db.get_runs_for_project(project_id)
         db_run_ids = {r["run_id"] for r in db_runs}
 
         # Include in-memory runs not yet saved to DB (e.g. if save_run failed)
@@ -683,7 +683,7 @@ async def get_project_runs(project_id: str, request: Request):
 # ──────────────────────────────────────────────────────────────────────────
 @app.get("/api/runs/{run_id_a}/compare/{run_id_b}")
 async def compare_runs(run_id_a: str, run_id_b: str, request: Request):
-    user = get_current_user(request)
+    user = await get_current_user(request)
     """Compare health scores and class pass-rates between two runs."""
     # Ownership check — allow if user_email is absent (legacy rows pre-fix)
     for rid in (run_id_a, run_id_b):
@@ -691,13 +691,13 @@ async def compare_runs(run_id_a: str, run_id_b: str, request: Request):
         if job:
             _check_job_ownership(job, user["email"])
         else:
-            db_row = _db.get_run(rid)
+            db_row = await _db.get_run(rid)
             if db_row:
                 owner = db_row.get("user_email", "")
                 if owner and owner != user["email"]:
                     raise HTTPException(403, f"Access denied to run {rid}")
     try:
-        diff = _db.compare_runs(run_id_a, run_id_b)
+        diff = await _db.compare_runs(run_id_a, run_id_b)
         if "error" in diff:
             raise HTTPException(404, diff["error"])
         return diff
@@ -719,7 +719,7 @@ async def auth_logout():
 
 @app.get("/api/auth/me")
 async def auth_me(request: Request):
-    return get_current_user(request)
+    return await get_current_user(request)
 
 
 # ── Project persistence endpoints ───────────────────────────────────────────
@@ -735,8 +735,8 @@ class _ProjectBody(BaseModel):
 
 @app.post("/api/projects")
 async def create_project(body: _ProjectBody, request: Request):
-    user = get_current_user(request)
-    _db.save_project(
+    user = await get_current_user(request)
+    await _db.save_project(
         body.project_id, user["email"], body.name, body.endpoint,
         body.api_key, body.document_text, body.document_name,
     )
@@ -745,15 +745,15 @@ async def create_project(body: _ProjectBody, request: Request):
 
 @app.get("/api/projects")
 async def list_projects(request: Request):
-    user = get_current_user(request)
-    projects = _db.get_projects_for_user(user["email"])
+    user = await get_current_user(request)
+    projects = await _db.get_projects_for_user(user["email"])
     return {"projects": projects}
 
 
 @app.get("/api/projects/{project_id}")
 async def get_project(project_id: str, request: Request):
-    get_current_user(request)
-    project = _db.get_project(project_id)
+    await get_current_user(request)
+    project = await _db.get_project(project_id)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
     return project
@@ -761,13 +761,13 @@ async def get_project(project_id: str, request: Request):
 
 @app.delete("/api/projects/{project_id}")
 async def delete_project(project_id: str, request: Request):
-    user = get_current_user(request)
-    project = _db.get_project(project_id)
+    user = await get_current_user(request)
+    project = await _db.get_project(project_id)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
     if project.get("user_email") != user["email"]:
         raise HTTPException(status_code=403, detail="Not your project")
-    _db.delete_project(project_id)
+    await _db.delete_project(project_id)
     return {"ok": True}
 
 
@@ -776,8 +776,8 @@ async def delete_project(project_id: str, request: Request):
 # ──────────────────────────────────────────────────────────────────────────
 @app.get("/api/quota")
 async def get_quota(request: Request):
-    user = get_current_user(request)
-    status = _db.get_quota_status(user["email"])
+    user = await get_current_user(request)
+    status = await _db.get_quota_status(user["email"])
     status["email"] = user["email"]
     return status
 
@@ -799,25 +799,25 @@ def _require_super_admin(user: dict) -> None:
 
 @app.get("/api/admin/stats")
 async def admin_stats(request: Request):
-    user = get_current_user(request)
+    user = await get_current_user(request)
     _require_tenant_admin(user)
-    result = _db.get_tenant_stats(user["tenant_id"])
+    result = await _db.get_tenant_stats(user["tenant_id"])
     result["admin_email"] = user["email"]
     return result
 
 
 @app.get("/api/admin/runs")
 async def admin_list_runs(request: Request):
-    user = get_current_user(request)
+    user = await get_current_user(request)
     _require_tenant_admin(user)
-    return {"runs": _db.get_tenant_runs(user["tenant_id"])}
+    return {"runs": await _db.get_tenant_runs(user["tenant_id"])}
 
 
 @app.get("/api/admin/users")
 async def admin_list_users(request: Request):
-    user = get_current_user(request)
+    user = await get_current_user(request)
     _require_tenant_admin(user)
-    return {"users": _db.get_tenant_users(user["tenant_id"])}
+    return {"users": await _db.get_tenant_users(user["tenant_id"])}
 
 
 class _AddUserBody(BaseModel):
@@ -842,11 +842,11 @@ def _validate_role(role: str) -> bool:
 @app.post("/api/admin/users")
 async def admin_add_user(body: _AddUserBody, request: Request):
     from core.cognito_admin import invite_user
-    user = get_current_user(request)
+    user = await get_current_user(request)
     _require_tenant_admin(user)
     if not _validate_role(body.role):
         raise HTTPException(400, "Invalid role. Use phase names (functional, security, quality, performance, load) joined by '+'.")
-    _db.add_user_to_tenant(body.user_email, user["tenant_id"], body.role, body.run_limit)
+    await _db.add_user_to_tenant(body.user_email, user["tenant_id"], body.role, body.run_limit)
     result = invite_user(body.user_email)
     if not result["ok"]:
         print(f"[Admin] Cognito invite failed for {body.user_email}: {result.get('error')} (user added to DB anyway)")
@@ -860,15 +860,15 @@ class _UpdateUserBody(BaseModel):
 
 @app.put("/api/admin/users/{email}")
 async def admin_update_user(email: str, body: _UpdateUserBody, request: Request):
-    user = get_current_user(request)
+    user = await get_current_user(request)
     _require_tenant_admin(user)
     if body.run_limit is not None:
-        if not _db.update_user_limit(email, body.run_limit, user["tenant_id"]):
+        if not await _db.update_user_limit(email, body.run_limit, user["tenant_id"]):
             raise HTTPException(404, "User not found in your tenant")
     if body.role is not None:
         if not _validate_role(body.role):
             raise HTTPException(400, "Invalid role. Use phase names (functional, security, quality, performance, load) joined by '+'.")
-        if not _db.update_user_role(email, body.role, user["tenant_id"]):
+        if not await _db.update_user_role(email, body.role, user["tenant_id"]):
             raise HTTPException(404, "User not found in your tenant")
     return {"ok": True}
 
@@ -876,9 +876,9 @@ async def admin_update_user(email: str, body: _UpdateUserBody, request: Request)
 @app.delete("/api/admin/users/{email}")
 async def admin_remove_user(email: str, request: Request):
     from core.cognito_admin import delete_user
-    user = get_current_user(request)
+    user = await get_current_user(request)
     _require_tenant_admin(user)
-    if not _db.remove_user(email, user["tenant_id"]):
+    if not await _db.remove_user(email, user["tenant_id"]):
         raise HTTPException(404, "User not found in your tenant")
     delete_user(email)
     return {"ok": True}
@@ -891,9 +891,9 @@ async def admin_remove_user(email: str, request: Request):
 
 @app.get("/api/super/tenants")
 async def super_list_tenants(request: Request):
-    user = get_current_user(request)
+    user = await get_current_user(request)
     _require_super_admin(user)
-    return {"tenants": _db.get_all_tenants()}
+    return {"tenants": await _db.get_all_tenants()}
 
 
 class _CreateTenantBody(BaseModel):
@@ -903,9 +903,9 @@ class _CreateTenantBody(BaseModel):
 
 @app.post("/api/super/tenants")
 async def super_create_tenant(body: _CreateTenantBody, request: Request):
-    user = get_current_user(request)
+    user = await get_current_user(request)
     _require_super_admin(user)
-    tenant = _db.create_tenant(body.name, body.quota_limit)
+    tenant = await _db.create_tenant(body.name, body.quota_limit)
     return tenant
 
 
@@ -916,18 +916,18 @@ class _UpdateTenantBody(BaseModel):
 
 @app.put("/api/super/tenants/{tenant_id}")
 async def super_update_tenant(tenant_id: str, body: _UpdateTenantBody, request: Request):
-    user = get_current_user(request)
+    user = await get_current_user(request)
     _require_super_admin(user)
-    if not _db.update_tenant(tenant_id, body.name, body.quota_limit):
+    if not await _db.update_tenant(tenant_id, body.name, body.quota_limit):
         raise HTTPException(404, "Tenant not found")
     return {"ok": True}
 
 
 @app.get("/api/super/tenants/{tenant_id}")
 async def super_get_tenant(tenant_id: str, request: Request):
-    user = get_current_user(request)
+    user = await get_current_user(request)
     _require_super_admin(user)
-    detail = _db.get_tenant_detail(tenant_id)
+    detail = await _db.get_tenant_detail(tenant_id)
     if not detail:
         raise HTTPException(404, "Tenant not found")
     return detail
@@ -935,9 +935,9 @@ async def super_get_tenant(tenant_id: str, request: Request):
 
 @app.post("/api/super/tenants/{tenant_id}/reset-quota")
 async def super_reset_tenant_quota(tenant_id: str, request: Request):
-    user = get_current_user(request)
+    user = await get_current_user(request)
     _require_super_admin(user)
-    if not _db.reset_tenant_quota(tenant_id):
+    if not await _db.reset_tenant_quota(tenant_id):
         raise HTTPException(404, "Tenant not found")
     return {"ok": True}
 
@@ -946,9 +946,9 @@ async def super_reset_tenant_quota(tenant_id: str, request: Request):
 async def super_add_user_to_tenant(tenant_id: str, body: _AddUserBody, request: Request):
     """Super admin can add/move any user into any tenant and invite them via Cognito."""
     from core.cognito_admin import invite_user
-    user = get_current_user(request)
+    user = await get_current_user(request)
     _require_super_admin(user)
-    _db.add_user_to_tenant(body.user_email, tenant_id, body.role, body.run_limit)
+    await _db.add_user_to_tenant(body.user_email, tenant_id, body.role, body.run_limit)
     result = invite_user(body.user_email)
     if not result["ok"]:
         print(f"[Super] Cognito invite failed for {body.user_email}: {result.get('error')}")
@@ -959,18 +959,18 @@ async def super_add_user_to_tenant(tenant_id: str, body: _AddUserBody, request: 
 async def super_remove_user_from_tenant(tenant_id: str, email: str, request: Request):
     """Remove a user from a tenant. If removing a tenant_admin, cascade-delete all their tenant's users."""
     from core.cognito_admin import delete_user
-    user = get_current_user(request)
+    user = await get_current_user(request)
     _require_super_admin(user)
 
     # Check if the user being removed is a tenant_admin — if so, delete all users in the tenant
-    target = _db.get_user(email)
+    target = await _db.get_user(email)
     if target and target.get("role") == "tenant_admin":
-        all_users = _db.get_tenant_users(tenant_id)
+        all_users = await _db.get_tenant_users(tenant_id)
         for u in all_users:
-            _db.remove_user(u["user_email"], tenant_id)
+            await _db.remove_user(u["user_email"], tenant_id)
             delete_user(u["user_email"])
     else:
-        _db.remove_user(email, tenant_id)
+        await _db.remove_user(email, tenant_id)
         delete_user(email)
     return {"ok": True}
 
@@ -979,13 +979,13 @@ async def super_remove_user_from_tenant(tenant_id: str, email: str, request: Req
 async def super_delete_tenant(tenant_id: str, request: Request):
     """Delete an entire tenant — removes all users from Cognito and DB, then deletes the tenant."""
     from core.cognito_admin import delete_user
-    user = get_current_user(request)
+    user = await get_current_user(request)
     _require_super_admin(user)
-    all_users = _db.get_tenant_users(tenant_id)
+    all_users = await _db.get_tenant_users(tenant_id)
     for u in all_users:
-        _db.remove_user(u["user_email"], tenant_id)
+        await _db.remove_user(u["user_email"], tenant_id)
         delete_user(u["user_email"])
-    if not _db.delete_tenant(tenant_id):
+    if not await _db.delete_tenant(tenant_id):
         raise HTTPException(404, "Tenant not found")
     return {"ok": True}
 

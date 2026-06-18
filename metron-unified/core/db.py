@@ -1,36 +1,35 @@
 """
-Core DB layer — SQLite persistence for run history, job recovery, and multi-tenant quota.
+Core DB layer — async SQLAlchemy persistence for run history, job recovery,
+and multi-tenant quota.
 
-Schema:
+Backend is chosen by config (core/config.py): Postgres in production (DB_* env
+vars), async SQLite locally. All public functions are coroutines — callers must
+await them. Return shapes are plain dicts, identical to the previous sqlite3
+implementation, so call sites only changed by adding `await`.
+
+Schema (see core/database.py for the ORM models):
   runs      — completed/failed evaluation runs (one row per run)
   projects  — saved project configs per user
   tenants   — one row per company/client. Tracks company-wide quota.
   users     — one row per Cognito user. Tracks per-user quota and role.
-
-DB path defaults to ./metron_runs.db; override via METRON_DB_PATH env var.
 """
 
 from __future__ import annotations
-import json
-import os
-import sqlite3
-import threading
+
 import uuid
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
-_DB_PATH_DEFAULT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "metron_runs.db"))
-_lock = threading.Lock()
+from sqlalchemy import delete, func, inspect as sa_inspect, select, update
+
+from core.database import Base, Project, Run, SessionLocal, Tenant, User, engine
 
 
-def _db_path() -> str:
-    return os.environ.get("METRON_DB_PATH", _DB_PATH_DEFAULT)
+# ── Helpers ───────────────────────────────────────────────────────────────────
 
-
-def _connect() -> sqlite3.Connection:
-    conn = sqlite3.connect(_db_path(), check_same_thread=False)
-    conn.row_factory = sqlite3.Row
-    return conn
+def _to_dict(obj: Any) -> Dict[str, Any]:
+    """Map an ORM instance to a plain column->value dict."""
+    return {c.key: getattr(obj, c.key) for c in sa_inspect(obj).mapper.column_attrs}
 
 
 def _current_period() -> str:
@@ -44,117 +43,58 @@ def _period_expired(period_start: str) -> bool:
     return (period_start or "") < _current_period()
 
 
-def init_db() -> None:
-    """Create tables if they don't exist. Call once at server startup."""
-    with _lock:
-        conn = _connect()
-        try:
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS runs (
-                    run_id           TEXT PRIMARY KEY,
-                    project_id       TEXT NOT NULL,
-                    user_email       TEXT,
-                    tenant_id        TEXT,
-                    timestamp        TEXT NOT NULL,
-                    health_score     REAL,
-                    domain           TEXT,
-                    application_type TEXT,
-                    status           TEXT DEFAULT 'completed',
-                    results_json     TEXT
-                )
-            """)
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_runs_project ON runs(project_id)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_runs_timestamp ON runs(timestamp)")
-            # Migrations: add columns to existing DBs
-            for col_sql in [
-                "ALTER TABLE runs ADD COLUMN user_email TEXT",
-                "ALTER TABLE runs ADD COLUMN tenant_id TEXT",
-            ]:
-                try:
-                    conn.execute(col_sql)
-                except Exception:
-                    pass
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_runs_user ON runs(user_email)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_runs_tenant ON runs(tenant_id)")
-            # Migration: add total_passed and total_tests columns to existing databases
-            for col_sql in [
-                "ALTER TABLE runs ADD COLUMN total_passed INTEGER",
-                "ALTER TABLE runs ADD COLUMN total_tests  INTEGER",
-            ]:
-                try:
-                    conn.execute(col_sql)
-                except Exception:
-                    pass
-            # Migration: add token_summary_json column to existing databases
-            try:
-                conn.execute("ALTER TABLE runs ADD COLUMN token_summary_json TEXT")
-            except Exception:
-                pass  # column already exists
-            # Mark any runs left in 'running' state as failed (crash recovery)
-            conn.execute("UPDATE runs SET status='failed' WHERE status='running'")
+# ── Schema init + crash recovery ───────────────────────────────────────────────
 
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS projects (
-                    project_id    TEXT PRIMARY KEY,
-                    user_email    TEXT NOT NULL,
-                    name          TEXT,
-                    endpoint      TEXT,
-                    api_key       TEXT,
-                    document_text TEXT,
-                    document_name TEXT,
-                    created_at    TEXT NOT NULL
-                )
-            """)
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_projects_user ON projects(user_email)")
+async def init_db() -> None:
+    """
+    Create tables if they don't exist, run crash recovery, and restore
+    tenant_admin roles. Call once at server startup.
 
-            # ── Multi-tenant tables ──────────────────────────────────────────
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS tenants (
-                    tenant_id    TEXT PRIMARY KEY,
-                    name         TEXT NOT NULL,
-                    quota_limit  INTEGER DEFAULT 50,
-                    quota_used   INTEGER DEFAULT 0,
-                    period_start TEXT NOT NULL,
-                    created_at   TEXT NOT NULL
-                )
-            """)
+    In production, Alembic owns schema changes; create_all here is an idempotent
+    safety net (and the only setup needed for the local SQLite fallback).
+    """
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
 
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS users (
-                    user_email   TEXT PRIMARY KEY,
-                    tenant_id    TEXT REFERENCES tenants(tenant_id),
-                    role         TEXT DEFAULT 'viewer',
-                    run_limit    INTEGER DEFAULT 10,
-                    runs_used    INTEGER DEFAULT 0,
-                    period_start TEXT NOT NULL,
-                    created_at   TEXT NOT NULL
-                )
-            """)
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_users_tenant ON users(tenant_id)")
+    async with SessionLocal() as session:
+        # Mark any runs left in 'running' state as failed (crash recovery)
+        await session.execute(
+            update(Run).where(Run.status == "running").values(status="failed")
+        )
 
-            # Restore tenant_admin role: for each tenant with NO tenant_admin user,
-            # promote the earliest-created user in that tenant to tenant_admin.
-            tenants_without_admin = conn.execute(
-                "SELECT tenant_id FROM tenants WHERE tenant_id NOT IN "
-                "(SELECT DISTINCT tenant_id FROM users WHERE role = 'tenant_admin' AND tenant_id IS NOT NULL)"
-            ).fetchall()
-            for t in tenants_without_admin:
-                earliest = conn.execute(
-                    "SELECT user_email FROM users WHERE tenant_id = ? ORDER BY created_at ASC LIMIT 1",
-                    (t["tenant_id"],),
-                ).fetchone()
-                if earliest:
-                    conn.execute(
-                        "UPDATE users SET role = 'tenant_admin' WHERE user_email = ?",
-                        (earliest["user_email"],),
+        # Restore tenant_admin role: for each tenant with NO tenant_admin user,
+        # promote the earliest-created user in that tenant to tenant_admin.
+        tenant_ids = (await session.execute(select(Tenant.tenant_id))).scalars().all()
+        admin_tenant_ids = set(
+            (
+                await session.execute(
+                    select(User.tenant_id).where(
+                        User.role == "tenant_admin", User.tenant_id.is_not(None)
                     )
-                    print(f"[DB] Restored tenant_admin role to {earliest['user_email']} for tenant {t['tenant_id']}")
-            conn.commit()
-        finally:
-            conn.close()
+                )
+            ).scalars().all()
+        )
+        for tid in tenant_ids:
+            if tid in admin_tenant_ids:
+                continue
+            earliest = (
+                await session.execute(
+                    select(User)
+                    .where(User.tenant_id == tid)
+                    .order_by(User.created_at.asc())
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
+            if earliest:
+                earliest.role = "tenant_admin"
+                print(f"[DB] Restored tenant_admin role to {earliest.user_email} for tenant {tid}")
+
+        await session.commit()
 
 
-def save_run(
+# ── Runs ────────────────────────────────────────────────────────────────────
+
+async def save_run(
     run_id: str,
     project_id: str,
     health_score: Optional[float],
@@ -166,155 +106,123 @@ def save_run(
     total_passed: Optional[int] = None,
     total_tests: Optional[int] = None,
 ) -> None:
-    """Persist a completed run to SQLite."""
-    with _lock:
-        conn = _connect()
-        try:
-            conn.execute(
-                """
-                INSERT OR REPLACE INTO runs
-                    (run_id, project_id, user_email, timestamp, health_score, domain, application_type, status, results_json, total_passed, total_tests)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    run_id,
-                    project_id,
-                    user_email,
-                    datetime.utcnow().isoformat(),
-                    health_score,
-                    domain,
-                    application_type,
-                    status,
-                    json.dumps(results),
-                    total_passed,
-                    total_tests,
-                ),
-            )
-            conn.commit()
-        finally:
-            conn.close()
+    """Persist a completed run (upsert by run_id)."""
+    async with SessionLocal() as session:
+        run = await session.get(Run, run_id)
+        if run is None:
+            run = Run(run_id=run_id)
+            session.add(run)
+        run.project_id = project_id
+        run.user_email = user_email
+        run.timestamp = datetime.utcnow().isoformat()
+        run.health_score = health_score
+        run.domain = domain
+        run.application_type = application_type
+        run.status = status
+        run.results_json = results
+        run.total_passed = total_passed
+        run.total_tests = total_tests
+        await session.commit()
 
 
-def touch_run(
+async def touch_run(
     run_id: str,
     project_id: str,
     user_email: str,
     domain: str,
     application_type: str,
 ) -> None:
-    """INSERT OR IGNORE a 'running' placeholder so crashes leave a DB record."""
-    with _lock:
-        conn = _connect()
-        try:
-            conn.execute(
-                """
-                INSERT OR IGNORE INTO runs
-                    (run_id, project_id, user_email, timestamp, domain, application_type, status)
-                VALUES (?, ?, ?, ?, ?, ?, 'running')
-                """,
-                (run_id, project_id, user_email, datetime.utcnow().isoformat(), domain, application_type),
+    """Insert a 'running' placeholder so crashes leave a DB record (ignore if exists)."""
+    async with SessionLocal() as session:
+        existing = await session.get(Run, run_id)
+        if existing is not None:
+            return
+        session.add(
+            Run(
+                run_id=run_id,
+                project_id=project_id,
+                user_email=user_email,
+                timestamp=datetime.utcnow().isoformat(),
+                domain=domain,
+                application_type=application_type,
+                status="running",
             )
-            conn.commit()
-        finally:
-            conn.close()
+        )
+        await session.commit()
 
 
-def mark_run_failed(run_id: str, error: str) -> None:
+async def mark_run_failed(run_id: str, error: str) -> None:
     """Update a run's status to 'failed' and store the error message."""
-    with _lock:
-        conn = _connect()
-        try:
-            conn.execute(
-                "UPDATE runs SET status='failed', results_json=? WHERE run_id=?",
-                (json.dumps({"error": error}), run_id),
-            )
-            conn.commit()
-        finally:
-            conn.close()
+    async with SessionLocal() as session:
+        await session.execute(
+            update(Run)
+            .where(Run.run_id == run_id)
+            .values(status="failed", results_json={"error": error})
+        )
+        await session.commit()
 
 
-def save_token_summary(run_id: str, token_summary: Dict[str, Any]) -> None:
+async def save_token_summary(run_id: str, token_summary: Dict[str, Any]) -> None:
     """Persist the LLMOps token summary for a run so it survives server restarts."""
-    with _lock:
-        conn = _connect()
-        try:
-            conn.execute(
-                "UPDATE runs SET token_summary_json=? WHERE run_id=?",
-                (json.dumps(token_summary), run_id),
+    async with SessionLocal() as session:
+        await session.execute(
+            update(Run).where(Run.run_id == run_id).values(token_summary_json=token_summary)
+        )
+        await session.commit()
+
+
+async def get_token_summary(run_id: str) -> Optional[Dict[str, Any]]:
+    """Load the LLMOps token summary for a run. Returns None if not found."""
+    async with SessionLocal() as session:
+        val = (
+            await session.execute(
+                select(Run.token_summary_json).where(Run.run_id == run_id)
             )
-            conn.commit()
-        finally:
-            conn.close()
+        ).scalar_one_or_none()
+        return val or None
 
 
-def get_token_summary(run_id: str) -> Optional[Dict[str, Any]]:
-    """Load the LLMOps token summary for a run from DB. Returns None if not found."""
-    with _lock:
-        conn = _connect()
-        try:
-            row = conn.execute(
-                "SELECT token_summary_json FROM runs WHERE run_id=?",
-                (run_id,),
-            ).fetchone()
-            if row and row["token_summary_json"]:
-                return json.loads(row["token_summary_json"])
-            return None
-        finally:
-            conn.close()
-
-
-def get_run(run_id: str) -> Optional[Dict[str, Any]]:
+async def get_run(run_id: str) -> Optional[Dict[str, Any]]:
     """Fetch a single run by run_id. Returns None if not found."""
-    with _lock:
-        conn = _connect()
-        try:
-            row = conn.execute(
-                "SELECT * FROM runs WHERE run_id = ?", (run_id,)
-            ).fetchone()
-            if row is None:
-                return None
-            d = dict(row)
-            if d.get("results_json"):
-                try:
-                    d["results"] = json.loads(d.pop("results_json"))
-                except Exception:
-                    d.pop("results_json", None)
-            return d
-        finally:
-            conn.close()
+    async with SessionLocal() as session:
+        run = await session.get(Run, run_id)
+        if run is None:
+            return None
+        d = _to_dict(run)
+        if d.get("results_json"):
+            d["results"] = d.pop("results_json")
+        else:
+            d.pop("results_json", None)
+        return d
 
 
-def get_runs_for_project(project_id: str, limit: int = 50) -> List[Dict[str, Any]]:
+async def get_runs_for_project(project_id: str, limit: int = 50) -> List[Dict[str, Any]]:
     """
-    Return all runs for a project, sorted newest-first.
-    results_json is NOT decoded (summary only) — call get_run() for full results.
+    Return all runs for a project, newest-first (summary fields only — call
+    get_run() for full results).
     """
-    with _lock:
-        conn = _connect()
-        try:
-            rows = conn.execute(
-                """
-                SELECT run_id, project_id, timestamp, health_score, domain,
-                       application_type, status, total_passed, total_tests
-                FROM runs
-                WHERE project_id = ?
-                ORDER BY timestamp DESC
-                LIMIT ?
-                """,
-                (project_id, limit),
-            ).fetchall()
-            return [dict(r) for r in rows]
-        finally:
-            conn.close()
+    cols = [
+        Run.run_id, Run.project_id, Run.timestamp, Run.health_score, Run.domain,
+        Run.application_type, Run.status, Run.total_passed, Run.total_tests,
+    ]
+    async with SessionLocal() as session:
+        rows = (
+            await session.execute(
+                select(*cols)
+                .where(Run.project_id == project_id)
+                .order_by(Run.timestamp.desc())
+                .limit(limit)
+            )
+        ).all()
+        return [dict(r._mapping) for r in rows]
 
 
-def compare_runs(run_id_a: str, run_id_b: str) -> Dict[str, Any]:
+async def compare_runs(run_id_a: str, run_id_b: str) -> Dict[str, Any]:
     """
     Basic diff between two runs: health score delta and per-class pass-rate change.
-    Returns a summary dict suitable for the /api/runs/{a}/compare/{b} endpoint.
     """
-    a = get_run(run_id_a)
-    b = get_run(run_id_b)
+    a = await get_run(run_id_a)
+    b = await get_run(run_id_b)
 
     if not a or not b:
         missing = []
@@ -356,51 +264,43 @@ def compare_runs(run_id_a: str, run_id_b: str) -> Dict[str, Any]:
     }
 
 
-def load_recent_jobs(hours: int = 24) -> List[Dict[str, Any]]:
+async def load_recent_jobs(hours: int = 24) -> List[Dict[str, Any]]:
     """
-    Fetch runs from the last N hours for in-memory job store re-population on startup.
-    Includes completed and failed runs (not 'running' — those were reset to 'failed' in init_db).
+    Fetch runs from the last N hours for in-memory job store re-population on
+    startup. Includes completed and failed runs only.
     """
     cutoff = (datetime.utcnow() - timedelta(hours=hours)).isoformat()
-    with _lock:
-        conn = _connect()
-        try:
-            rows = conn.execute(
-                """
-                SELECT run_id, status, results_json, token_summary_json, user_email, project_id
-                FROM runs
-                WHERE timestamp >= ? AND status IN ('completed', 'failed')
-                ORDER BY timestamp DESC
-                LIMIT 200
-                """,
-                (cutoff,),
-            ).fetchall()
-            result = []
-            for row in rows:
-                d = dict(row)
-                if d.get("results_json"):
-                    try:
-                        d["results"] = json.loads(d.pop("results_json"))
-                    except Exception:
-                        d.pop("results_json", None)
-                else:
-                    d.pop("results_json", None)
-                if d.get("token_summary_json"):
-                    try:
-                        d["token_summary"] = json.loads(d.pop("token_summary_json"))
-                    except Exception:
-                        d.pop("token_summary_json", None)
-                else:
-                    d.pop("token_summary_json", None)
-                result.append(d)
-            return result
-        finally:
-            conn.close()
+    cols = [
+        Run.run_id, Run.status, Run.results_json, Run.token_summary_json,
+        Run.user_email, Run.project_id,
+    ]
+    async with SessionLocal() as session:
+        rows = (
+            await session.execute(
+                select(*cols)
+                .where(Run.timestamp >= cutoff, Run.status.in_(("completed", "failed")))
+                .order_by(Run.timestamp.desc())
+                .limit(200)
+            )
+        ).all()
+        result = []
+        for r in rows:
+            d = dict(r._mapping)
+            if d.get("results_json"):
+                d["results"] = d.pop("results_json")
+            else:
+                d.pop("results_json", None)
+            if d.get("token_summary_json"):
+                d["token_summary"] = d.pop("token_summary_json")
+            else:
+                d.pop("token_summary_json", None)
+            result.append(d)
+        return result
 
 
 # ── Project persistence ───────────────────────────────────────────────────────
 
-def save_project(
+async def save_project(
     project_id: str,
     user_email: str,
     name: str,
@@ -409,521 +309,381 @@ def save_project(
     document_text: str,
     document_name: str,
 ) -> None:
-    with _lock:
-        conn = _connect()
-        try:
-            conn.execute(
-                """
-                INSERT OR REPLACE INTO projects
-                    (project_id, user_email, name, endpoint, api_key,
-                     document_text, document_name, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (project_id, user_email, name, endpoint, api_key,
-                 document_text, document_name, datetime.utcnow().isoformat()),
+    async with SessionLocal() as session:
+        project = await session.get(Project, project_id)
+        if project is None:
+            project = Project(project_id=project_id)
+            session.add(project)
+        project.user_email = user_email
+        project.name = name
+        project.endpoint = endpoint
+        project.api_key = api_key
+        project.document_text = document_text
+        project.document_name = document_name
+        project.created_at = datetime.utcnow().isoformat()
+        await session.commit()
+
+
+async def get_projects_for_user(user_email: str) -> List[Dict[str, Any]]:
+    cols = [
+        Project.project_id, Project.name, Project.endpoint,
+        Project.document_name, Project.created_at,
+    ]
+    async with SessionLocal() as session:
+        rows = (
+            await session.execute(
+                select(*cols)
+                .where(Project.user_email == user_email)
+                .order_by(Project.created_at.desc())
             )
-            conn.commit()
-        finally:
-            conn.close()
+        ).all()
+        return [dict(r._mapping) for r in rows]
 
 
-def get_projects_for_user(user_email: str) -> List[Dict[str, Any]]:
-    with _lock:
-        conn = _connect()
-        try:
-            rows = conn.execute(
-                """
-                SELECT project_id, name, endpoint, document_name, created_at
-                FROM projects
-                WHERE user_email = ?
-                ORDER BY created_at DESC
-                """,
-                (user_email,),
-            ).fetchall()
-            return [dict(r) for r in rows]
-        finally:
-            conn.close()
+async def get_project(project_id: str) -> Optional[Dict[str, Any]]:
+    async with SessionLocal() as session:
+        project = await session.get(Project, project_id)
+        return _to_dict(project) if project else None
 
 
-def get_project(project_id: str) -> Optional[Dict[str, Any]]:
-    with _lock:
-        conn = _connect()
-        try:
-            row = conn.execute(
-                "SELECT * FROM projects WHERE project_id = ?", (project_id,)
-            ).fetchone()
-            return dict(row) if row else None
-        finally:
-            conn.close()
-
-
-def delete_project(project_id: str) -> bool:
+async def delete_project(project_id: str) -> bool:
     """Delete a project and all its runs. Returns True if the project existed."""
-    with _lock:
-        conn = _connect()
-        try:
-            cur = conn.execute(
-                "DELETE FROM projects WHERE project_id = ?", (project_id,)
-            )
-            conn.execute("DELETE FROM runs WHERE project_id = ?", (project_id,))
-            conn.commit()
-            return cur.rowcount > 0
-        finally:
-            conn.close()
+    async with SessionLocal() as session:
+        result = await session.execute(
+            delete(Project).where(Project.project_id == project_id)
+        )
+        await session.execute(delete(Run).where(Run.project_id == project_id))
+        await session.commit()
+        return result.rowcount > 0
 
 
 # ── Multi-tenant: user management ─────────────────────────────────────────────
 
-def _ensure_default_tenant(conn: sqlite3.Connection) -> str:
-    """Get or create the default tenant. Returns its tenant_id."""
-    row = conn.execute("SELECT tenant_id FROM tenants WHERE name = 'Default'").fetchone()
-    if row:
-        return row["tenant_id"]
-    tid = str(uuid.uuid4())
-    conn.execute(
-        "INSERT INTO tenants (tenant_id, name, quota_limit, quota_used, period_start, created_at) VALUES (?, ?, 100, 0, ?, ?)",
-        (tid, "Default", _current_period(), datetime.utcnow().isoformat()),
-    )
-    return tid
-
-
-def get_or_create_user(user_email: str, super_admin_emails: List[str] = None) -> Optional[Dict[str, Any]]:
+async def get_or_create_user(
+    user_email: str, super_admin_emails: List[str] = None
+) -> Optional[Dict[str, Any]]:
     """
     Fetch the DB user record for a verified Cognito login.
     - Super admin emails (from SUPER_ADMIN_EMAILS env): auto-created/synced on every login.
-    - All other emails: must be pre-created by an admin. Returns None if not found (access denied).
+    - All other emails: must be pre-created by an admin. Returns None if not found.
     """
     super_admin_emails = super_admin_emails or []
-    with _lock:
-        conn = _connect()
-        try:
-            row = conn.execute("SELECT * FROM users WHERE user_email = ?", (user_email,)).fetchone()
-            if row:
-                user = dict(row)
-                updates = []
-                params = []
-                if _period_expired(user.get("period_start", "")):
-                    updates.append("runs_used = 0")
-                    updates.append("period_start = ?")
-                    params.append(_current_period())
-                    user["runs_used"] = 0
-                    user["period_start"] = _current_period()
-                # Always sync super_admin role from env
-                if user_email in super_admin_emails and user.get("role") != "super_admin":
-                    updates.append("role = 'super_admin'")
-                    user["role"] = "super_admin"
-                if updates:
-                    params.append(user_email)
-                    conn.execute(f"UPDATE users SET {', '.join(updates)} WHERE user_email = ?", params)
-                    conn.commit()
-                return user
+    async with SessionLocal() as session:
+        user = await session.get(User, user_email)
+        if user is not None:
+            if _period_expired(user.period_start or ""):
+                user.runs_used = 0
+                user.period_start = _current_period()
+            if user_email in super_admin_emails and user.role != "super_admin":
+                user.role = "super_admin"
+            await session.commit()
+            return _to_dict(user)
 
-            # Super admins are auto-created from env var — no pre-registration needed
-            if user_email in super_admin_emails:
-                now = datetime.utcnow().isoformat()
-                conn.execute(
-                    "INSERT INTO users (user_email, tenant_id, role, run_limit, runs_used, period_start, created_at) "
-                    "VALUES (?, NULL, 'super_admin', 0, 0, ?, ?)",
-                    (user_email, _current_period(), now),
-                )
-                conn.commit()
-                return {
-                    "user_email": user_email, "tenant_id": None, "role": "super_admin",
-                    "run_limit": 0, "runs_used": 0, "period_start": _current_period(), "created_at": now,
-                }
+        # Super admins are auto-created from env var — no pre-registration needed
+        if user_email in super_admin_emails:
+            now = datetime.utcnow().isoformat()
+            user = User(
+                user_email=user_email, tenant_id=None, role="super_admin",
+                run_limit=0, runs_used=0, period_start=_current_period(), created_at=now,
+            )
+            session.add(user)
+            await session.commit()
+            return _to_dict(user)
 
-            # Unknown email — admin must pre-register this user
-            return None
-        finally:
-            conn.close()
+        # Unknown email — admin must pre-register this user
+        return None
 
 
-def get_user(user_email: str) -> Optional[Dict[str, Any]]:
-    with _lock:
-        conn = _connect()
-        try:
-            row = conn.execute("SELECT * FROM users WHERE user_email = ?", (user_email,)).fetchone()
-            return dict(row) if row else None
-        finally:
-            conn.close()
+async def get_user(user_email: str) -> Optional[Dict[str, Any]]:
+    async with SessionLocal() as session:
+        user = await session.get(User, user_email)
+        return _to_dict(user) if user else None
 
 
 # ── Multi-tenant: quota enforcement ───────────────────────────────────────────
 
-def try_consume_quota(user_email: str) -> Tuple[bool, str]:
+async def try_consume_quota(user_email: str) -> Tuple[bool, str]:
     """
     Atomically check quota AND increment counters in one transaction.
     Returns (allowed, reason). If allowed, counters are already incremented.
     Super admins are always allowed. Limits of 0 mean unlimited.
-    """
-    with _lock:
-        conn = _connect()
-        try:
-            row = conn.execute("SELECT * FROM users WHERE user_email = ?", (user_email,)).fetchone()
-            if not row:
-                return True, ""
 
-            user = dict(row)
+    Atomicity on Postgres comes from row-level locks (SELECT ... FOR UPDATE);
+    SQLite serializes writes at the file level, so the same code is safe there.
+    """
+    async with SessionLocal() as session:
+        async with session.begin():
+            user = (
+                await session.execute(
+                    select(User).where(User.user_email == user_email).with_for_update()
+                )
+            ).scalar_one_or_none()
+            if user is None:
+                return True, ""
 
             # Reset user counter if new month
-            if _period_expired(user.get("period_start", "")):
-                conn.execute(
-                    "UPDATE users SET runs_used = 0, period_start = ? WHERE user_email = ?",
-                    (_current_period(), user_email),
-                )
-                conn.commit()
-                user["runs_used"] = 0
+            if _period_expired(user.period_start or ""):
+                user.runs_used = 0
+                user.period_start = _current_period()
 
-            if user.get("role") == "super_admin":
+            if user.role == "super_admin":
                 return True, ""
 
-            run_limit = user.get("run_limit", 10)
-            runs_used = user.get("runs_used", 0)
+            run_limit = user.run_limit if user.run_limit is not None else 10
+            runs_used = user.runs_used or 0
             if run_limit > 0 and runs_used >= run_limit:
                 return False, (
                     f"You have used all {runs_used}/{run_limit} of your allocated runs this month. "
                     "Ask your team admin to increase your limit."
                 )
 
-            tenant_id = user.get("tenant_id")
+            tenant_id = user.tenant_id
             if tenant_id:
-                tenant = conn.execute(
-                    "SELECT * FROM tenants WHERE tenant_id = ?", (tenant_id,)
-                ).fetchone()
-                if tenant:
-                    tenant = dict(tenant)
-                    if _period_expired(tenant.get("period_start", "")):
-                        conn.execute(
-                            "UPDATE tenants SET quota_used = 0, period_start = ? WHERE tenant_id = ?",
-                            (_current_period(), tenant_id),
-                        )
-                        conn.commit()
-                        tenant["quota_used"] = 0
+                tenant = (
+                    await session.execute(
+                        select(Tenant).where(Tenant.tenant_id == tenant_id).with_for_update()
+                    )
+                ).scalar_one_or_none()
+                if tenant is not None:
+                    if _period_expired(tenant.period_start or ""):
+                        tenant.quota_used = 0
+                        tenant.period_start = _current_period()
 
-                    quota_limit = tenant.get("quota_limit", 50)
-                    quota_used  = tenant.get("quota_used", 0)
+                    quota_limit = tenant.quota_limit if tenant.quota_limit is not None else 50
+                    quota_used = tenant.quota_used or 0
                     if quota_limit > 0 and quota_used >= quota_limit:
                         return False, (
                             f"Your organization has used all {quota_used}/{quota_limit} runs for this month. "
                             "Contact your team admin to increase the org limit."
                         )
+                    tenant.quota_used = quota_used + 1
 
-                    # Atomically increment tenant quota
-                    updated = conn.execute(
-                        "UPDATE tenants SET quota_used = quota_used + 1 "
-                        "WHERE tenant_id = ? AND (quota_limit = 0 OR quota_used < quota_limit)",
-                        (tenant_id,),
-                    ).rowcount
-                    if updated == 0:
-                        conn.rollback()
-                        # Re-read actual count for accurate message
-                        t2 = conn.execute("SELECT quota_used, quota_limit FROM tenants WHERE tenant_id = ?", (tenant_id,)).fetchone()
-                        used2 = t2["quota_used"] if t2 else quota_used
-                        lim2  = t2["quota_limit"] if t2 else quota_limit
-                        return False, (
-                            f"Your organization has used all {used2}/{lim2} runs for this month. "
-                            "Contact your team admin to increase the org limit."
-                        )
-
-            # Atomically increment user quota
-            if run_limit > 0:
-                updated = conn.execute(
-                    "UPDATE users SET runs_used = runs_used + 1 "
-                    "WHERE user_email = ? AND (run_limit = 0 OR runs_used < run_limit)",
-                    (user_email,),
-                ).rowcount
-                if updated == 0:
-                    # Rollback tenant increment if it happened
-                    conn.rollback()
-                    return False, (
-                        f"You have used all {runs_used}/{run_limit} of your allocated runs this month. "
-                        "Ask your team admin to increase your limit."
-                    )
-            else:
-                conn.execute(
-                    "UPDATE users SET runs_used = runs_used + 1 WHERE user_email = ?",
-                    (user_email,),
-                )
-
-            conn.commit()
+            # Increment user quota
+            user.runs_used = (user.runs_used or 0) + 1
             return True, ""
-        finally:
-            conn.close()
 
 
-def get_quota_status(user_email: str) -> Dict[str, Any]:
+async def get_quota_status(user_email: str) -> Dict[str, Any]:
     """Return quota display info for the current user."""
-    with _lock:
-        conn = _connect()
-        try:
-            row = conn.execute("SELECT * FROM users WHERE user_email = ?", (user_email,)).fetchone()
-            if not row:
-                return {"role": "viewer", "run_limit": 10, "runs_used": 0,
-                        "tenant_quota_limit": 0, "tenant_quota_used": 0, "tenant_name": ""}
-            user = dict(row)
-            result: Dict[str, Any] = {
-                "role":               user.get("role", "viewer"),
-                "run_limit":          user.get("run_limit", 10),
-                "runs_used":          user.get("runs_used", 0),
-                "tenant_id":          user.get("tenant_id", ""),
-                "tenant_name":        "",
-                "tenant_quota_limit": 0,
-                "tenant_quota_used":  0,
-            }
-            if user.get("tenant_id"):
-                t = conn.execute(
-                    "SELECT * FROM tenants WHERE tenant_id = ?", (user["tenant_id"],)
-                ).fetchone()
-                if t:
-                    t = dict(t)
-                    result["tenant_name"]        = t.get("name", "")
-                    result["tenant_quota_limit"] = t.get("quota_limit", 0)
-                    result["tenant_quota_used"]  = t.get("quota_used", 0)
-            return result
-        finally:
-            conn.close()
+    async with SessionLocal() as session:
+        user = await session.get(User, user_email)
+        if user is None:
+            return {"role": "viewer", "run_limit": 10, "runs_used": 0,
+                    "tenant_quota_limit": 0, "tenant_quota_used": 0, "tenant_name": ""}
+        result: Dict[str, Any] = {
+            "role":               user.role or "viewer",
+            "run_limit":          user.run_limit if user.run_limit is not None else 10,
+            "runs_used":          user.runs_used or 0,
+            "tenant_id":          user.tenant_id or "",
+            "tenant_name":        "",
+            "tenant_quota_limit": 0,
+            "tenant_quota_used":  0,
+        }
+        if user.tenant_id:
+            tenant = await session.get(Tenant, user.tenant_id)
+            if tenant is not None:
+                result["tenant_name"]        = tenant.name or ""
+                result["tenant_quota_limit"] = tenant.quota_limit or 0
+                result["tenant_quota_used"]  = tenant.quota_used or 0
+        return result
 
 
 # ── Tenant Admin: user management within a tenant ─────────────────────────────
 
-def get_tenant_users(tenant_id: str) -> List[Dict[str, Any]]:
-    with _lock:
-        conn = _connect()
-        try:
-            rows = conn.execute(
-                "SELECT user_email, role, run_limit, runs_used, created_at FROM users WHERE tenant_id = ?",
-                (tenant_id,),
-            ).fetchall()
-            return [dict(r) for r in rows]
-        finally:
-            conn.close()
+async def get_tenant_users(tenant_id: str) -> List[Dict[str, Any]]:
+    cols = [User.user_email, User.role, User.run_limit, User.runs_used, User.created_at]
+    async with SessionLocal() as session:
+        rows = (
+            await session.execute(select(*cols).where(User.tenant_id == tenant_id))
+        ).all()
+        return [dict(r._mapping) for r in rows]
 
 
-def add_user_to_tenant(
+async def add_user_to_tenant(
     user_email: str, tenant_id: str, role: str = "viewer", run_limit: int = 10
 ) -> None:
     """Create or update a user's tenant assignment and role."""
-    with _lock:
-        conn = _connect()
-        try:
-            existing = conn.execute(
-                "SELECT user_email FROM users WHERE user_email = ?", (user_email,)
-            ).fetchone()
-            if existing:
-                conn.execute(
-                    "UPDATE users SET tenant_id = ?, role = ?, run_limit = ? WHERE user_email = ?",
-                    (tenant_id, role, run_limit, user_email),
+    async with SessionLocal() as session:
+        user = await session.get(User, user_email)
+        if user is not None:
+            user.tenant_id = tenant_id
+            user.role = role
+            user.run_limit = run_limit
+        else:
+            session.add(
+                User(
+                    user_email=user_email, tenant_id=tenant_id, role=role,
+                    run_limit=run_limit, runs_used=0,
+                    period_start=_current_period(), created_at=datetime.utcnow().isoformat(),
                 )
-            else:
-                conn.execute(
-                    "INSERT INTO users (user_email, tenant_id, role, run_limit, runs_used, period_start, created_at) "
-                    "VALUES (?, ?, ?, ?, 0, ?, ?)",
-                    (user_email, tenant_id, role, run_limit, _current_period(), datetime.utcnow().isoformat()),
-                )
-            conn.commit()
-        finally:
-            conn.close()
+            )
+        await session.commit()
 
 
-def update_user_limit(user_email: str, run_limit: int, requesting_tenant_id: str) -> bool:
+async def update_user_limit(user_email: str, run_limit: int, requesting_tenant_id: str) -> bool:
     """Tenant admin updates a user's run_limit. Returns False if user not in tenant."""
-    with _lock:
-        conn = _connect()
-        try:
-            row = conn.execute("SELECT tenant_id FROM users WHERE user_email = ?", (user_email,)).fetchone()
-            if not row or row["tenant_id"] != requesting_tenant_id:
-                return False
-            conn.execute("UPDATE users SET run_limit = ? WHERE user_email = ?", (run_limit, user_email))
-            conn.commit()
-            return True
-        finally:
-            conn.close()
+    async with SessionLocal() as session:
+        user = await session.get(User, user_email)
+        if user is None or user.tenant_id != requesting_tenant_id:
+            return False
+        user.run_limit = run_limit
+        await session.commit()
+        return True
 
 
-def update_user_role(user_email: str, role: str, requesting_tenant_id: str) -> bool:
+async def update_user_role(user_email: str, role: str, requesting_tenant_id: str) -> bool:
     """Tenant admin updates a user's role. Returns False if user not in tenant or is the tenant admin."""
-    with _lock:
-        conn = _connect()
-        try:
-            row = conn.execute("SELECT tenant_id, role FROM users WHERE user_email = ?", (user_email,)).fetchone()
-            if not row or row["tenant_id"] != requesting_tenant_id:
-                return False
-            # Protect the tenant admin — their role must never be changed via this path
-            if row["role"] == "tenant_admin":
-                return False
-            conn.execute("UPDATE users SET role = ? WHERE user_email = ?", (role, user_email))
-            conn.commit()
-            return True
-        finally:
-            conn.close()
+    async with SessionLocal() as session:
+        user = await session.get(User, user_email)
+        if user is None or user.tenant_id != requesting_tenant_id:
+            return False
+        # Protect the tenant admin — their role must never be changed via this path
+        if user.role == "tenant_admin":
+            return False
+        user.role = role
+        await session.commit()
+        return True
 
 
-def remove_user(user_email: str, requesting_tenant_id: str) -> bool:
+async def remove_user(user_email: str, requesting_tenant_id: str) -> bool:
     """Tenant admin removes a user. Returns False if user not in tenant."""
-    with _lock:
-        conn = _connect()
-        try:
-            row = conn.execute("SELECT tenant_id FROM users WHERE user_email = ?", (user_email,)).fetchone()
-            if not row or row["tenant_id"] != requesting_tenant_id:
-                return False
-            conn.execute("DELETE FROM users WHERE user_email = ?", (user_email,))
-            conn.commit()
-            return True
-        finally:
-            conn.close()
+    async with SessionLocal() as session:
+        user = await session.get(User, user_email)
+        if user is None or user.tenant_id != requesting_tenant_id:
+            return False
+        await session.delete(user)
+        await session.commit()
+        return True
 
 
-def get_tenant_runs(tenant_id: str) -> List[Dict[str, Any]]:
+async def get_tenant_runs(tenant_id: str) -> List[Dict[str, Any]]:
     """Return all runs for a tenant with user attribution, newest first."""
-    with _lock:
-        conn = _connect()
-        try:
-            rows = conn.execute(
-                """
-                SELECT r.run_id, r.user_email, r.project_id, r.timestamp,
-                       r.health_score, r.total_passed, r.total_tests,
-                       r.domain, r.application_type, r.status
-                FROM runs r
-                JOIN users u ON r.user_email = u.user_email
-                WHERE u.tenant_id = ?
-                ORDER BY r.timestamp DESC
-                LIMIT 200
-                """,
-                (tenant_id,),
-            ).fetchall()
-            return [dict(r) for r in rows]
-        finally:
-            conn.close()
+    cols = [
+        Run.run_id, Run.user_email, Run.project_id, Run.timestamp,
+        Run.health_score, Run.total_passed, Run.total_tests,
+        Run.domain, Run.application_type, Run.status,
+    ]
+    async with SessionLocal() as session:
+        rows = (
+            await session.execute(
+                select(*cols)
+                .join(User, Run.user_email == User.user_email)
+                .where(User.tenant_id == tenant_id)
+                .order_by(Run.timestamp.desc())
+                .limit(200)
+            )
+        ).all()
+        return [dict(r._mapping) for r in rows]
 
 
-def get_tenant_stats(tenant_id: str) -> Dict[str, Any]:
+async def get_tenant_stats(tenant_id: str) -> Dict[str, Any]:
     """Tenant admin: summary of their org's users, runs, and quota."""
-    with _lock:
-        conn = _connect()
-        try:
-            tenant = conn.execute("SELECT * FROM tenants WHERE tenant_id = ?", (tenant_id,)).fetchone()
-            if not tenant:
-                return {}
-            result = dict(tenant)
-            result["users"] = [
-                dict(r) for r in conn.execute(
-                    "SELECT user_email, role, run_limit, runs_used FROM users WHERE tenant_id = ?",
-                    (tenant_id,),
-                ).fetchall()
-            ]
-            result["total_runs_all_time"] = conn.execute(
-                "SELECT COUNT(*) as c FROM runs WHERE tenant_id = ?", (tenant_id,)
-            ).fetchone()["c"]
-            return result
-        finally:
-            conn.close()
+    async with SessionLocal() as session:
+        tenant = await session.get(Tenant, tenant_id)
+        if tenant is None:
+            return {}
+        result = _to_dict(tenant)
+        user_cols = [User.user_email, User.role, User.run_limit, User.runs_used]
+        users = (
+            await session.execute(select(*user_cols).where(User.tenant_id == tenant_id))
+        ).all()
+        result["users"] = [dict(r._mapping) for r in users]
+        result["total_runs_all_time"] = (
+            await session.execute(
+                select(func.count()).select_from(Run).where(Run.tenant_id == tenant_id)
+            )
+        ).scalar_one()
+        return result
 
 
 # ── Super Admin: tenant management ────────────────────────────────────────────
 
-def get_all_tenants() -> List[Dict[str, Any]]:
-    with _lock:
-        conn = _connect()
-        try:
-            rows = conn.execute("SELECT * FROM tenants ORDER BY created_at DESC").fetchall()
-            tenants = []
-            for r in rows:
-                t = dict(r)
-                t["user_count"] = conn.execute(
-                    "SELECT COUNT(*) as c FROM users WHERE tenant_id = ?", (t["tenant_id"],)
-                ).fetchone()["c"]
-                t["run_count"] = conn.execute(
-                    "SELECT COUNT(*) as c FROM runs WHERE tenant_id = ?", (t["tenant_id"],)
-                ).fetchone()["c"]
-                tenants.append(t)
-            return tenants
-        finally:
-            conn.close()
+async def get_all_tenants() -> List[Dict[str, Any]]:
+    async with SessionLocal() as session:
+        tenants = (
+            await session.execute(select(Tenant).order_by(Tenant.created_at.desc()))
+        ).scalars().all()
+        result = []
+        for tenant in tenants:
+            t = _to_dict(tenant)
+            t["user_count"] = (
+                await session.execute(
+                    select(func.count()).select_from(User).where(User.tenant_id == tenant.tenant_id)
+                )
+            ).scalar_one()
+            t["run_count"] = (
+                await session.execute(
+                    select(func.count()).select_from(Run).where(Run.tenant_id == tenant.tenant_id)
+                )
+            ).scalar_one()
+            result.append(t)
+        return result
 
 
-def create_tenant(name: str, quota_limit: int = 50) -> Dict[str, Any]:
+async def create_tenant(name: str, quota_limit: int = 50) -> Dict[str, Any]:
     tenant_id = str(uuid.uuid4())
     now = datetime.utcnow().isoformat()
-    with _lock:
-        conn = _connect()
-        try:
-            conn.execute(
-                "INSERT INTO tenants (tenant_id, name, quota_limit, quota_used, period_start, created_at) "
-                "VALUES (?, ?, ?, 0, ?, ?)",
-                (tenant_id, name, quota_limit, _current_period(), now),
+    async with SessionLocal() as session:
+        session.add(
+            Tenant(
+                tenant_id=tenant_id, name=name, quota_limit=quota_limit,
+                quota_used=0, period_start=_current_period(), created_at=now,
             )
-            conn.commit()
-            return {"tenant_id": tenant_id, "name": name, "quota_limit": quota_limit,
-                    "quota_used": 0, "created_at": now}
-        finally:
-            conn.close()
+        )
+        await session.commit()
+        return {"tenant_id": tenant_id, "name": name, "quota_limit": quota_limit,
+                "quota_used": 0, "created_at": now}
 
 
-def update_tenant(tenant_id: str, name: str = None, quota_limit: int = None) -> bool:
-    updates, params = [], []
-    if name is not None:
-        updates.append("name = ?"); params.append(name)
-    if quota_limit is not None:
-        updates.append("quota_limit = ?"); params.append(quota_limit)
-    if not updates:
+async def update_tenant(tenant_id: str, name: str = None, quota_limit: int = None) -> bool:
+    if name is None and quota_limit is None:
         return False
-    params.append(tenant_id)
-    with _lock:
-        conn = _connect()
-        try:
-            cur = conn.execute(
-                f"UPDATE tenants SET {', '.join(updates)} WHERE tenant_id = ?", params
-            )
-            conn.commit()
-            return cur.rowcount > 0
-        finally:
-            conn.close()
+    async with SessionLocal() as session:
+        tenant = await session.get(Tenant, tenant_id)
+        if tenant is None:
+            return False
+        if name is not None:
+            tenant.name = name
+        if quota_limit is not None:
+            tenant.quota_limit = quota_limit
+        await session.commit()
+        return True
 
 
-def get_tenant_detail(tenant_id: str) -> Optional[Dict[str, Any]]:
+async def get_tenant_detail(tenant_id: str) -> Optional[Dict[str, Any]]:
     """Super admin: full tenant info with user list."""
-    with _lock:
-        conn = _connect()
-        try:
-            tenant = conn.execute("SELECT * FROM tenants WHERE tenant_id = ?", (tenant_id,)).fetchone()
-            if not tenant:
-                return None
-            result = dict(tenant)
-            result["users"] = [
-                dict(r) for r in conn.execute(
-                    "SELECT user_email, role, run_limit, runs_used, created_at FROM users WHERE tenant_id = ?",
-                    (tenant_id,),
-                ).fetchall()
-            ]
-            return result
-        finally:
-            conn.close()
+    async with SessionLocal() as session:
+        tenant = await session.get(Tenant, tenant_id)
+        if tenant is None:
+            return None
+        result = _to_dict(tenant)
+        user_cols = [
+            User.user_email, User.role, User.run_limit, User.runs_used, User.created_at,
+        ]
+        users = (
+            await session.execute(select(*user_cols).where(User.tenant_id == tenant_id))
+        ).all()
+        result["users"] = [dict(r._mapping) for r in users]
+        return result
 
 
-def reset_tenant_quota(tenant_id: str) -> bool:
+async def reset_tenant_quota(tenant_id: str) -> bool:
     """Super admin: manually reset a tenant's quota_used to 0."""
-    with _lock:
-        conn = _connect()
-        try:
-            cur = conn.execute(
-                "UPDATE tenants SET quota_used = 0, period_start = ? WHERE tenant_id = ?",
-                (_current_period(), tenant_id),
-            )
-            conn.commit()
-            return cur.rowcount > 0
-        finally:
-            conn.close()
+    async with SessionLocal() as session:
+        tenant = await session.get(Tenant, tenant_id)
+        if tenant is None:
+            return False
+        tenant.quota_used = 0
+        tenant.period_start = _current_period()
+        await session.commit()
+        return True
 
 
-def delete_tenant(tenant_id: str) -> bool:
+async def delete_tenant(tenant_id: str) -> bool:
     """Super admin: delete a tenant and all its users and runs."""
-    with _lock:
-        conn = _connect()
-        try:
-            conn.execute("DELETE FROM users WHERE tenant_id = ?", (tenant_id,))
-            conn.execute("DELETE FROM runs WHERE tenant_id = ?", (tenant_id,))
-            cur = conn.execute("DELETE FROM tenants WHERE tenant_id = ?", (tenant_id,))
-            conn.commit()
-            return cur.rowcount > 0
-        finally:
-            conn.close()
+    async with SessionLocal() as session:
+        await session.execute(delete(User).where(User.tenant_id == tenant_id))
+        await session.execute(delete(Run).where(Run.tenant_id == tenant_id))
+        result = await session.execute(delete(Tenant).where(Tenant.tenant_id == tenant_id))
+        await session.commit()
+        return result.rowcount > 0

@@ -65,7 +65,7 @@ def verify_cognito_token(token: str) -> Optional[dict]:
         return None
 
 
-def get_current_user(request: Request) -> dict:
+async def get_current_user(request: Request) -> dict:
     auth_header = request.headers.get("Authorization", "")
     if not auth_header.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Not authenticated")
@@ -80,7 +80,7 @@ def get_current_user(request: Request) -> dict:
         for e in os.environ.get("SUPER_ADMIN_EMAILS", "").split(",")
         if e.strip()
     ]
-    db_user = _db.get_or_create_user(user["email"], super_admin_emails)
+    db_user = await _db.get_or_create_user(user["email"], super_admin_emails)
     if db_user is None:
         raise HTTPException(
             status_code=403,

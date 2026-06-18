@@ -148,7 +148,7 @@ async def run_pipeline(
 
     # Write a 'running' placeholder to DB so a server crash is recoverable
     try:
-        _db.touch_run(run_id, project_id, user_email, config.agent_domain, config.application_type.value)
+        await _db.touch_run(run_id, project_id, user_email, config.agent_domain, config.application_type.value)
     except Exception as _touch_err:
         print(f"[Pipeline] touch_run failed (non-fatal): {_touch_err}")
 
@@ -857,7 +857,7 @@ async def run_pipeline(
 
             if _token_summary and _token_summary.get("total_tokens", 0) > 0:
                 job_store[run_id]["token_summary"] = _token_summary
-                _db.save_token_summary(run_id, _token_summary)
+                await _db.save_token_summary(run_id, _token_summary)
                 _log(job_store, run_id, "token_summary", {
                     "total_tokens":       _token_summary["total_tokens"],
                     "estimated_cost_usd": _token_summary["estimated_cost_usd"],
@@ -876,7 +876,7 @@ async def run_pipeline(
 
         # Persist completed run to SQLite for history / regression endpoints
         try:
-            _db.save_run(
+            await _db.save_run(
                 run_id=run_id,
                 project_id=project_id,
                 health_score=report.health_score if _is_full_run else None,
@@ -917,7 +917,7 @@ async def run_pipeline(
         _job_locks.pop(run_id, None)
         _mlflow_run.end_run(_mlflow_run_id, "FAILED")
         try:
-            _db.mark_run_failed(run_id, str(e))
+            await _db.mark_run_failed(run_id, str(e))
         except Exception as _db_fail_err:
             print(f"[Pipeline] mark_run_failed failed: {_db_fail_err}")
 
