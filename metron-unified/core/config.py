@@ -150,20 +150,59 @@ CORS_ORIGINS = [
     *_extra_origins,
 ]
 
-# ── Helper: resolve API key from env or explicit value ─────────────────────
-def resolve_api_key(provider_name: str, explicit_key: str = "") -> str:
-    if explicit_key:
-        return explicit_key
-    env_key = LLM_PROVIDERS.get(provider_name, {}).get("env_key", "")
-    return os.environ.get(env_key, "") if env_key else ""
+# ── Env-driven LLM config ──────────────────────────────────────────────────
+# The LLM used to RUN evaluations comes entirely from the environment now:
+#   LLM_MODEL   — full litellm model string; provider implied by the prefix
+#                 (e.g. "gemini/gemini-2.5-flash", "groq/...", "azure/gpt-4o")
+#   LLM_API_KEY — the API key for that provider
+# A single model is used for all tasks (fast / judge / balanced).
+def get_llm_model() -> str:
+    return os.environ.get("LLM_MODEL", "").strip()
 
-def get_model(provider_name: str, task: str = "balanced") -> str:
-    """Return litellm model string for provider + task (fast/judge/balanced)."""
-    p = LLM_PROVIDERS.get(provider_name, LLM_PROVIDERS["Groq"])
-    return p["models"].get(task, p["default"])
+def get_llm_api_key() -> str:
+    return os.environ.get("LLM_API_KEY", "").strip()
+
+def provider_from_model(model: str) -> str:
+    """Map a litellm model string to a friendly provider name via its prefix.
+
+    Reverse-looks-up LLM_PROVIDERS by 'prefix' so the existing token_optimize /
+    vision / rpm lookups (which key off the friendly name) keep working.
+    Falls back to the raw prefix when unknown.
+    """
+    prefix = model.split("/", 1)[0] if "/" in model else model
+    for name, info in LLM_PROVIDERS.items():
+        if info.get("prefix") == prefix:
+            return name
+    return prefix
+
+# ── Helper: resolve API key / model (env-only) ─────────────────────────────
+# Args are accepted for backward compatibility with existing call sites but
+# ignored — credentials and model come from the environment only.
+def resolve_api_key(provider_name: str = "", explicit_key: str = "") -> str:
+    return get_llm_api_key()
+
+def get_model(provider_name: str = "", task: str = "balanced") -> str:
+    """Return the single env-configured litellm model string (LLM_MODEL)."""
+    return get_llm_model()
 
 def should_optimize_tokens(provider_name: str) -> bool:
     return LLM_PROVIDERS.get(provider_name, {}).get("token_optimize", False)
+
+def apply_llm_env() -> None:
+    """Bridge LLM_API_KEY → the provider's expected litellm env var.
+
+    We pass api_key explicitly through LLMClient, but some eval sub-libraries
+    (ragas / deepeval internals) read the provider-specific env var directly
+    (e.g. GEMINI_API_KEY). Mirror LLM_API_KEY into it (without overwriting an
+    existing value) so both code paths authenticate. Idempotent — safe to call
+    repeatedly. Bedrock uses AWS_* creds and has no single key to bridge.
+    """
+    model, key = get_llm_model(), get_llm_api_key()
+    if not model or not key:
+        return
+    env_key = LLM_PROVIDERS.get(provider_from_model(model), {}).get("env_key", "")
+    if env_key and env_key != "AWS_ACCESS_KEY_ID" and not os.environ.get(env_key):
+        os.environ[env_key] = key
 
 def get_token_budget(provider_name: str, task: str = "normal") -> int:
     if should_optimize_tokens(provider_name):

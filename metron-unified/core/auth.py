@@ -118,7 +118,7 @@ def get_current_user(request: Request) -> dict:
     development (never set this in production).
     """
     if os.environ.get("METRON_AUTH_BYPASS", "").strip() == "1":
-        return {"email": "dev@local.test", "role": _FULL_ACCESS_ROLE, "tenant_id": ""}
+        return {"email": "dev@local.test", "role": _FULL_ACCESS_ROLE}
 
     auth_header = request.headers.get("Authorization", "")
     if not auth_header.startswith("Bearer "):
@@ -130,5 +130,4 @@ def get_current_user(request: Request) -> dict:
 
     # Full permission for everyone — no DB lookup, no role/tenant restriction.
     user["role"] = _FULL_ACCESS_ROLE
-    user["tenant_id"] = ""
     return user

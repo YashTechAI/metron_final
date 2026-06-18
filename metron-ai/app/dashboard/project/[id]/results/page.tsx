@@ -506,7 +506,7 @@ function ResultsContent() {
     const r = results;
 
 
-    const isFullRunMd = ["all", "tenant_admin", "super_admin"].includes(r.user_role ?? "all");
+    const isFullRunMd = ["all"].includes(r.user_role ?? "all");
     const _mdRole = (r.user_role ?? "");
     const _mdRqOnly = !_mdRole.includes("functional") && !_mdRole.includes("security") && !_mdRole.includes("quality") && _mdRole !== "all";
     const scoreLineMd = isFullRunMd
@@ -573,7 +573,7 @@ ${loadSection}`;
 
   const healthPct = Math.round(results.health_score * 100);
   const healthColor = healthPct >= 70 ? "text-secondary" : healthPct >= 40 ? "text-[#855300]" : "text-error";
-  const isFullRun = ["all", "tenant_admin", "super_admin"].includes(results.user_role ?? "all");
+  const isFullRun = ["all"].includes(results.user_role ?? "all");
 
   const _KNOWN_PHASES = new Set(["functional", "security", "quality", "performance", "load"]);
   const _ROLE_PHASES: Record<string, Set<string>> = {
@@ -586,8 +586,6 @@ ${loadSection}`;
     "functional+quality":  new Set(["functional", "quality"]),
     "performance+load":    new Set(["performance", "load"]),
     "all":                 _KNOWN_PHASES,
-    "tenant_admin":        _KNOWN_PHASES,
-    "super_admin":         _KNOWN_PHASES,
   };
   const _resolvePhases = (role: string): Set<string> => {
     if (_ROLE_PHASES[role]) return _ROLE_PHASES[role];

@@ -110,13 +110,6 @@ export default function PreviewPage() {
         performance_requests: cfg.performance_requests,
         load_concurrent_users: cfg.load_concurrent_users,
         load_duration_seconds: cfg.load_duration_seconds,
-        llm_provider: cfg.llm_provider,
-        llm_api_key: cfg.llm_api_key,
-        azure_endpoint: cfg.azure_endpoint || "",
-        aws_access_key_id: cfg.aws_access_key_id || "",
-        aws_secret_access_key: cfg.aws_secret_access_key || "",
-        aws_region: cfg.aws_region || "",
-        bedrock_model_id: cfg.bedrock_model_id || "",
         application_type: cfg.application_type || "chatbot",
         selected_attacks: cfg.selected_attacks,
         attacks_per_category: cfg.attacks_per_category,
@@ -238,7 +231,6 @@ export default function PreviewPage() {
               <SummaryRow label="Agent" value={(cfg.agent_name as string) || "—"} />
               <SummaryRow label="Domain" value={cfg.agent_domain as string} />
               <SummaryRow label="RAG Mode" value={cfg.is_rag ? "Yes" : "No"} />
-              <SummaryRow label="LLM Provider" value={cfg.llm_provider as string} />
             </div>
           </div>
         </div>

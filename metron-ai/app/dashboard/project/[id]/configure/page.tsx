@@ -17,15 +17,6 @@ const APPLICATION_TYPES = [
 ];
 
 
-interface Provider {
-  description: string;
-  rpm: number;
-  models: Record<string, string>;
-  default: string;
-  env_key: string;
-  selectable_models?: string[];
-}
-
 export default function ConfigurePage() {
   const params = useParams();
   const router = useRouter();
@@ -62,14 +53,9 @@ export default function ConfigurePage() {
   const [loadDuration, setLoadDuration] = useState(30);
 
   // LLM
-  const [providers, setProviders] = useState<Record<string, Provider>>({});
-  const [llmProvider, setLlmProvider] = useState("NVIDIA NIM");
-  const [llmApiKey, setLlmApiKey] = useState("");
-  const [azureEndpoint, setAzureEndpoint] = useState("");
-  const [awsAccessKeyId, setAwsAccessKeyId] = useState("");
-  const [awsSecretAccessKey, setAwsSecretAccessKey] = useState("");
-  const [awsRegion, setAwsRegion] = useState("us-east-1");
-  const [bedrockModelId, setBedrockModelId] = useState("anthropic.claude-haiku-4-5-20251001");
+  // The LLM that runs evaluations is configured server-side (LLM_MODEL / LLM_API_KEY
+  // in .env). We only fetch its name for a read-only display.
+  const [serverModel, setServerModel] = useState("");
 
   // Security
   const [selectedAttacks, setSelectedAttacks] = useState<string[]>(["jailbreak", "prompt_injection", "pii_extraction", "toxicity", "encoding"]);
@@ -138,11 +124,11 @@ export default function ConfigurePage() {
     }
   }, [projectId]);
 
-  // Load providers
+  // Load the server-configured evaluation model (read-only display)
   useEffect(() => {
     authFetch(`${API}/api/providers`)
       .then((r) => r.json())
-      .then((data) => setProviders(data))
+      .then((data) => setServerModel(data?.model || ""))
       .catch(() => {});
   }, []);
 
@@ -191,9 +177,6 @@ export default function ConfigurePage() {
           application_type: applicationType,
           num_personas: numPersonas,
           num_scenarios: numScenarios,
-          llm_provider: llmProvider,
-          llm_api_key: llmApiKey,
-          azure_endpoint: azureEndpoint,
         }),
       });
       if (!res.ok) {
@@ -266,13 +249,6 @@ export default function ConfigurePage() {
       performance_requests: perfRequests,
       load_concurrent_users: loadUsers,
       load_duration_seconds: loadDuration,
-      llm_provider: llmProvider,
-      llm_api_key: llmApiKey,
-      azure_endpoint: azureEndpoint,
-      aws_access_key_id: awsAccessKeyId,
-      aws_secret_access_key: awsSecretAccessKey,
-      aws_region: awsRegion,
-      bedrock_model_id: bedrockModelId,
       selected_attacks: selectedAttacks,
       attacks_per_category: attacksPerCategory,
       ragas_metrics: ragasMetrics,
@@ -311,13 +287,6 @@ export default function ConfigurePage() {
             application_type: applicationType,
             num_personas: numPersonas,
             num_scenarios: numScenarios,
-            llm_provider: llmProvider,
-            llm_api_key: llmApiKey,
-            azure_endpoint: azureEndpoint,
-            aws_access_key_id: awsAccessKeyId,
-            aws_secret_access_key: awsSecretAccessKey,
-            aws_region: awsRegion,
-            bedrock_model_id: bedrockModelId,
           }),
         });
         if (res.ok) {
@@ -331,8 +300,6 @@ export default function ConfigurePage() {
 
     router.push(`/dashboard/project/${projectId}/preview`);
   };
-
-  const providerInfo = providers[llmProvider];
 
   // ── Architecture auto-extract ──────────────────────────────────────────
   const handleArchExtract = async () => {
@@ -352,9 +319,6 @@ export default function ConfigurePage() {
         fd.append("content", docText);
       }
       if (archDiagramFile) fd.append("image", archDiagramFile, archDiagramFile.name);
-      fd.append("llm_provider",   llmProvider);
-      fd.append("llm_api_key",    llmApiKey);
-      fd.append("azure_endpoint", azureEndpoint);
 
       const res = await authFetch(`${API}/api/parse-architecture`, { method: "POST", body: fd });
       if (!res.ok) throw new Error(await res.text());
@@ -683,108 +647,18 @@ export default function ConfigurePage() {
         </div>
       </Section>
 
-      {/* ── LLM Provider ──────────────────────────────────── */}
-      <Section title="LLM Provider" icon="psychology">
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-          <div className="space-y-4">
-            <Field label="Provider">
-              <select className="input-field" aria-label="Provider" value={llmProvider} onChange={(e) => setLlmProvider(e.target.value)}>
-                {Object.keys(providers).length > 0
-                  ? Object.keys(providers).map((p) => <option key={p}>{p}</option>)
-                  : ["NVIDIA NIM", "Groq", "Google Gemini", "Azure OpenAI", "AWS Bedrock"].map((p) => <option key={p}>{p}</option>)}
-              </select>
-            </Field>
-            {providerInfo && (
-              <div className="p-3 rounded-xl bg-[var(--color-surface-variant)] space-y-1">
-                <p className="text-xs font-semibold text-[var(--color-on-surface)]">{providerInfo.description}</p>
-                <p className="text-xs text-[var(--color-on-surface-variant)] opacity-60">{providerInfo.rpm} RPM</p>
-              </div>
-            )}
-          </div>
-          <div className="space-y-4">
-            {llmProvider !== "AWS Bedrock" && (
-              <Field label="API Key">
-                <input
-                  className="input-field"
-                  type="password"
-                  placeholder="Enter your API key (or set env variable)"
-                  value={llmApiKey}
-                  onChange={(e) => setLlmApiKey(e.target.value)}
-                />
-              </Field>
-            )}
-            {llmProvider === "Azure OpenAI" && (
-              <Field label="Azure Endpoint URL">
-                <input
-                  className="input-field"
-                  type="text"
-                  placeholder="https://your-resource.openai.azure.com/"
-                  value={azureEndpoint}
-                  onChange={(e) => setAzureEndpoint(e.target.value)}
-                />
-              </Field>
-            )}
-            {llmProvider === "AWS Bedrock" && (
-              <>
-                <Field label="AWS Access Key ID">
-                  <input
-                    className="input-field"
-                    type="password"
-                    placeholder="AKIA..."
-                    value={awsAccessKeyId}
-                    onChange={(e) => setAwsAccessKeyId(e.target.value)}
-                  />
-                </Field>
-                <Field label="AWS Secret Access Key">
-                  <input
-                    className="input-field"
-                    type="password"
-                    placeholder="your_secret_key"
-                    value={awsSecretAccessKey}
-                    onChange={(e) => setAwsSecretAccessKey(e.target.value)}
-                  />
-                </Field>
-                <Field label="AWS Region">
-                  <input
-                    className="input-field"
-                    type="text"
-                    placeholder="us-east-1"
-                    value={awsRegion}
-                    onChange={(e) => setAwsRegion(e.target.value)}
-                  />
-                </Field>
-                <Field label="Bedrock Model">
-                  <select
-                    className="input-field"
-                    aria-label="Bedrock Model"
-                    value={bedrockModelId}
-                    onChange={(e) => setBedrockModelId(e.target.value)}
-                  >
-                    {(providers["AWS Bedrock"]?.selectable_models ?? [
-                      "anthropic.claude-haiku-4-5-20251001",
-                      "anthropic.claude-3-5-haiku-20241022-v1:0",
-                      "anthropic.claude-3-5-sonnet-20241022-v2:0",
-                      "amazon.nova-pro-v1:0",
-                      "amazon.nova-lite-v1:0",
-                    ]).map((m) => (
-                      <option key={m} value={m}>{m}</option>
-                    ))}
-                  </select>
-                </Field>
-              </>
-            )}
-            {providerInfo && llmProvider !== "AWS Bedrock" && (
-              <div className="p-3 rounded-xl bg-[var(--color-surface-variant)] space-y-1">
-                <p className="text-xs text-[var(--color-on-surface-variant)] opacity-60">Default model</p>
-                <p className="text-xs font-mono font-semibold text-[var(--color-on-surface)]">{providerInfo.default}</p>
-              </div>
-            )}
-            {llmProvider === "AWS Bedrock" && (
-              <div className="p-3 rounded-xl bg-[var(--color-surface-variant)] space-y-1">
-                <p className="text-xs text-[var(--color-on-surface-variant)] opacity-60">Selected model</p>
-                <p className="text-xs font-mono font-semibold text-[var(--color-on-surface)]">bedrock/{bedrockModelId}</p>
-              </div>
-            )}
+      {/* ── Evaluation LLM (configured server-side) ───────────── */}
+      <Section title="Evaluation LLM" icon="psychology">
+        <div className="p-4 rounded-xl bg-[var(--color-surface-variant)] flex items-center gap-3">
+          <span className="material-symbols-outlined text-xl text-primary">lock</span>
+          <div className="flex-1 min-w-0">
+            <p className="text-xs text-[var(--color-on-surface-variant)] opacity-60">
+              The model and API key used to run evaluations are configured on the server
+              (<span className="font-mono">LLM_MODEL</span> / <span className="font-mono">LLM_API_KEY</span>).
+            </p>
+            <p className="text-sm font-mono font-semibold text-[var(--color-on-surface)] mt-1">
+              {serverModel || "not configured"}
+            </p>
           </div>
         </div>
       </Section>

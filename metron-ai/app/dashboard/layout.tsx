@@ -13,7 +13,6 @@ export default function DashboardLayout({
   const pathname = usePathname();
   const [isCollapsed, setIsCollapsed] = useState(false);
   const [userEmail, setUserEmail] = useState("");
-  const [orgName, setOrgName] = useState("");
 
   useEffect(() => {
     // Auth is enforced by the platform proxy; just load the caller's identity.
@@ -23,7 +22,6 @@ export default function DashboardLayout({
       .then((d) => {
         if (!isMounted || !d) return;
         if (d.email) setUserEmail(d.email);
-        if (d.tenant_name) setOrgName(d.tenant_name);
       })
       .catch(() => {});
     return () => {
@@ -127,15 +125,7 @@ export default function DashboardLayout({
            <div className="flex items-center gap-2">
               <span className="text-[9px] font-black text-outline uppercase tracking-[0.2em] opacity-40">Workspace</span>
               <span className="material-symbols-outlined text-sm text-outline opacity-20">chevron_right</span>
-              {orgName ? (
-                <>
-                  <span className="text-[9px] font-black text-[var(--color-primary)] uppercase tracking-[0.2em]">{orgName}</span>
-                  <span className="material-symbols-outlined text-sm text-outline opacity-20">chevron_right</span>
-                  <span className="text-[9px] font-black text-on-surface uppercase tracking-[0.2em] opacity-60">Dashboard</span>
-                </>
-              ) : (
-                <span className="text-[9px] font-black text-on-surface uppercase tracking-[0.2em]">Live Intelligence Node</span>
-              )}
+              <span className="text-[9px] font-black text-on-surface uppercase tracking-[0.2em]">Live Intelligence Node</span>
            </div>
         </header>
 

@@ -55,7 +55,7 @@ class ChatbotAdapter:
         self.response_trim_marker = response_trim_marker
         self.session_mode         = session_mode
         self.headers: Dict[str, str] = {"Content-Type": "application/json"}
-        if auth_type == "bearer" and auth_token:
+        if auth_token and "bearer" in auth_type.lower():
             self.headers["Authorization"] = f"Bearer {auth_token}"
 
     def _build_payload(
@@ -113,9 +113,9 @@ class ChatbotAdapter:
         history: Optional[List] = None,
         conversation_id: str = "",
     ) -> AdapterResponse:
-        payload = self._build_payload(message, conversation_id, history)
         start = time.monotonic()
         try:
+            payload = self._build_payload(message, conversation_id, history)
             async with aiohttp.ClientSession() as session:
                 async with session.post(
                     self.endpoint_url,

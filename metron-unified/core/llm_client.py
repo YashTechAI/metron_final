@@ -19,8 +19,9 @@ from typing import Any, Optional
 import litellm
 
 from .config import (
-    LLM_PROVIDERS, FALLBACK_CHAIN,
-    get_model, resolve_api_key, should_optimize_tokens, get_token_budget,
+    LLM_PROVIDERS,
+    should_optimize_tokens, get_token_budget,
+    get_llm_model, get_llm_api_key, provider_from_model, apply_llm_env,
 )
 
 litellm.set_verbose = True
@@ -85,19 +86,29 @@ class LLMClient:
         aws_region: str = "",
         bedrock_model_id: str = "",
     ):
-        self.provider_name = provider_name
-        self.api_key = resolve_api_key(provider_name, api_key)
-        self.azure_endpoint = azure_endpoint.strip()
-        self.aws_access_key_id = aws_access_key_id.strip()
-        self.aws_secret_access_key = aws_secret_access_key.strip()
-        self.aws_region = aws_region.strip() or "us-east-1"
-        self.bedrock_model_id = bedrock_model_id.strip()
-        if provider_name not in LLM_PROVIDERS:
-            print(f"[LLMClient] WARNING: Unknown provider '{provider_name}', falling back to Groq. "
-                  f"Known providers: {list(LLM_PROVIDERS.keys())}")
-        provider_info = LLM_PROVIDERS.get(provider_name, LLM_PROVIDERS["Groq"])
-        self.rate_limiter = RateLimiter(provider_info.get("rpm", 30))
-        self.optimize_tokens = should_optimize_tokens(provider_name)
+        # Model, key, and provider all come from the environment (LLM_MODEL /
+        # LLM_API_KEY). The constructor args are accepted for backward
+        # compatibility with existing call sites but ignored.
+        apply_llm_env()   # bridge LLM_API_KEY → provider env var (e.g. GEMINI_API_KEY)
+        self.model = get_llm_model()
+        self.api_key = get_llm_api_key()
+        self.prefix = self.model.split("/", 1)[0] if "/" in self.model else self.model
+        self.provider_name = provider_from_model(self.model)
+        # Azure / Bedrock extras are read from env in _call(); kept as attrs for
+        # any callers that still reference them.
+        self.azure_endpoint = os.environ.get("AZURE_OPENAI_ENDPOINT", "").strip()
+        self.aws_access_key_id = os.environ.get("AWS_ACCESS_KEY_ID", "").strip()
+        self.aws_secret_access_key = os.environ.get("AWS_SECRET_ACCESS_KEY", "").strip()
+        self.aws_region = os.environ.get("AWS_DEFAULT_REGION", "").strip() or "us-east-1"
+        self.bedrock_model_id = ""   # full model lives in LLM_MODEL now
+        if not self.model:
+            print("[LLMClient] WARNING: LLM_MODEL is not set in the environment.")
+        # rpm: LLM_RPM override, else the matched provider's registry rpm, else 30.
+        _rpm_env = os.environ.get("LLM_RPM", "").strip()
+        _rpm = int(_rpm_env) if _rpm_env.isdigit() else \
+            LLM_PROVIDERS.get(self.provider_name, {}).get("rpm", 30)
+        self.rate_limiter = RateLimiter(_rpm)
+        self.optimize_tokens = should_optimize_tokens(self.provider_name)
         # Map model → exhausted_at timestamp (monotonic). Replaced the old set so
         # exhaustion expires after _EXHAUSTION_COOLDOWN_S instead of lasting forever.
         self._exhausted: dict[str, float] = {}
@@ -134,12 +145,9 @@ class LLMClient:
             max_tokens = get_token_budget(self.provider_name,
                                           "large" if len(prompt) > 2000 else "normal")
 
-        primary_model = get_model(self.provider_name, task)
-        # User-specified Bedrock model overrides the provider default
-        if self.bedrock_model_id and self.provider_name == "AWS Bedrock":
-            primary_model = f"bedrock/{self.bedrock_model_id}"
-
-        candidates = [primary_model]
+        # Single env-configured model for all tasks (fast/judge/balanced). With
+        # one model + key there is no cross-provider fallback chain.
+        candidates = [self.model]
 
         now = time.monotonic()
         last_error: Exception = RuntimeError("No models available")
@@ -155,7 +163,7 @@ class LLMClient:
                 try:
                     # TPM pre-throttle for Azure (50K tokens/min limit)
                     # MLflow autolog records tokens after-the-fact; enforcement must happen here
-                    if self.provider_name == "Azure OpenAI":
+                    if self.prefix == "azure":
                         _now = time.monotonic()
                         self._tpm_window = [
                             (ts, t) for ts, t in self._tpm_window if _now - ts < 60.0

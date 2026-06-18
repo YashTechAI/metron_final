@@ -94,8 +94,7 @@ export default function NodeBuilder() {
           agent_name: config.name || "Default Agent",
           application_type: "chatbot",
           is_rag: false,
-          llm_provider: "Groq", // default or fetch from project later
-          llm_api_key: "", // will be injected on backend via env if blank
+          // Eval LLM (model + key) is configured server-side via LLM_MODEL / LLM_API_KEY.
           num_personas: 3,
           num_scenarios: 5,
           conversation_turns: 3,

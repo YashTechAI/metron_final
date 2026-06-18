@@ -19,7 +19,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from core.auth import get_current_user
-from core.config import CORS_ORIGINS, LLM_PROVIDERS
+from core.config import CORS_ORIGINS, get_llm_model, get_llm_api_key, apply_llm_env
 from core.llm_client import LLMClient
 from core.models import (
     ApplicationType, ConnectTestRequest, JobStatus,
@@ -85,6 +85,7 @@ async def _reap_stuck_jobs():
 async def _startup():
     """Init DB and re-populate in-memory jobs from recent completed/failed runs."""
     try:
+        apply_llm_env()   # bridge LLM_API_KEY → provider env var (e.g. GEMINI_API_KEY)
         _db.init_db()
         for row in _db.load_recent_jobs(hours=24):
             run_id = row["run_id"]
@@ -103,7 +104,7 @@ async def _startup():
                 "eval_warnings": [],
                 "token_summary": row.get("token_summary"),
             }
-        print(f"[DB] Recovered {len(jobs)} recent runs from SQLite on startup.")
+        print(f"[DB] Recovered {len(jobs)} recent runs from Postgres on startup.")
         asyncio.create_task(_reap_stuck_jobs())
     except Exception as e:
         print(f"[DB] Startup recovery failed (non-fatal): {e}")
@@ -116,21 +117,13 @@ def _check_job_ownership(job: Dict, user_email: str) -> None:
         raise HTTPException(status_code=403, detail="Access denied: this run belongs to another user")
 
 # ──────────────────────────────────────────────────────────────────────────
-# GET /api/providers — list LLM providers
+# GET /api/providers — the single env-configured LLM (model + whether key is set)
 # ──────────────────────────────────────────────────────────────────────────
 @app.get("/api/providers")
 async def get_providers():
     return {
-        name: {
-            "description":      info["description"],
-            "rpm":              info["rpm"],
-            "models":           info["models"],
-            "default":          info["default"],
-            "env_key":          info["env_key"],
-            "token_optimize":   info.get("token_optimize", False),
-            "selectable_models": info.get("selectable_models", []),
-        }
-        for name, info in LLM_PROVIDERS.items()
+        "model":       get_llm_model(),
+        "configured":  _has_credentials(),
     }
 
 
@@ -226,17 +219,10 @@ async def parse_document_endpoint(req: ParseDocumentRequest, request: Request):
     get_current_user(request)
     if not req.document_text.strip():
         raise HTTPException(400, "document_text is required")
-    if not _has_credentials(req):
-        raise HTTPException(400, f"API key required for {req.llm_provider}")
+    if not _has_credentials():
+        raise HTTPException(400, "LLM_MODEL / LLM_API_KEY not configured on the server")
 
-    llm_client = LLMClient(
-        req.llm_provider, req.llm_api_key,
-        azure_endpoint=req.azure_endpoint,
-        aws_access_key_id=getattr(req, "aws_access_key_id", "") or "",
-        aws_secret_access_key=getattr(req, "aws_secret_access_key", "") or "",
-        aws_region=getattr(req, "aws_region", "") or "",
-        bedrock_model_id=getattr(req, "bedrock_model_id", "") or "",
-    )
+    llm_client = LLMClient()   # model + key from env (LLM_MODEL / LLM_API_KEY)
     profile = await parse_document(req.document_text, llm_client)
     return {
         "application_type":  profile.application_type.value,
@@ -258,9 +244,6 @@ async def parse_architecture_endpoint(
     request:        Request,
     content:        str           = Form(""),
     image:          Optional[UploadFile] = File(None),
-    llm_provider:   str           = Form("Groq"),
-    llm_api_key:    str           = Form(""),
-    azure_endpoint: str           = Form(""),
 ):
     get_current_user(request)
     """
@@ -275,9 +258,7 @@ async def parse_architecture_endpoint(
     if not content.strip() and not image:
         raise HTTPException(400, "Provide either text content or an image file")
 
-    llm_client = LLMClient(llm_provider, llm_api_key, azure_endpoint=azure_endpoint)
-    # Note: parse_architecture_image endpoint uses direct form params, not a RunConfig.
-    # AWS Bedrock credentials would need dedicated form params if required here.
+    llm_client = LLMClient()   # model + key from env (LLM_MODEL / LLM_API_KEY)
 
     if image:
         raw_bytes  = await image.read()
@@ -298,17 +279,10 @@ async def preview(req: PreviewRequest, request: Request):
     get_current_user(request)
     if not req.agent_description.strip():
         raise HTTPException(400, "agent_description is required")
-    if not _has_credentials(req):
-        raise HTTPException(400, f"API key required for {req.llm_provider}")
+    if not _has_credentials():
+        raise HTTPException(400, "LLM_MODEL / LLM_API_KEY not configured on the server")
 
-    llm_client = LLMClient(
-        req.llm_provider, req.llm_api_key,
-        azure_endpoint=req.azure_endpoint,
-        aws_access_key_id=getattr(req, "aws_access_key_id", "") or "",
-        aws_secret_access_key=getattr(req, "aws_secret_access_key", "") or "",
-        aws_region=getattr(req, "aws_region", "") or "",
-        bedrock_model_id=getattr(req, "bedrock_model_id", "") or "",
-    )
+    llm_client = LLMClient()   # model + key from env (LLM_MODEL / LLM_API_KEY)
 
     from stages.s0_profile.document_parser import build_profile_from_config
     profile = build_profile_from_config(
@@ -465,8 +439,8 @@ async def run_tests(
 
     run_config = RunConfig(**config_data)
 
-    if not _has_credentials(run_config):
-        raise HTTPException(400, f"API key required for {run_config.llm_provider}")
+    if not _has_credentials():
+        raise HTTPException(400, "LLM_MODEL / LLM_API_KEY not configured on the server")
 
     # Read uploaded document
     doc_text = ""
@@ -763,7 +737,8 @@ async def delete_project(project_id: str, request: Request):
 
 
 # ──────────────────────────────────────────────────────────────────────────
-# GET /api/quota  — current user's quota status
+# GET /api/quota  — current user's identity (email + role)
+# Quota/authorization removed; kept under this path for the frontend identity fetch.
 # ──────────────────────────────────────────────────────────────────────────
 @app.get("/api/quota")
 async def get_quota(request: Request):
@@ -772,34 +747,21 @@ async def get_quota(request: Request):
     return {
         "email": user["email"],
         "role": user["role"],
-        "run_limit": 0,        # 0 = unlimited
-        "runs_used": 0,
-        "tenant_id": "",
-        "tenant_name": "",
-        "tenant_quota_limit": 0,
-        "tenant_quota_used": 0,
     }
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────
-def _env_key_set(provider_name: str) -> bool:
-    env_key = LLM_PROVIDERS.get(provider_name, {}).get("env_key", "")
-    return bool(env_key and os.environ.get(env_key))
+def _has_credentials(req=None) -> bool:
+    """True when the server has an LLM configured in the environment.
 
-
-def _has_credentials(req) -> bool:
-    """Return True when the request carries sufficient credentials for its provider.
-
-    AWS Bedrock uses aws_access_key_id/aws_secret_access_key instead of llm_api_key,
-    so we accept either inline AWS creds or the usual API-key / env-var path.
+    The LLM used to run evaluations now comes entirely from LLM_MODEL / LLM_API_KEY
+    in the environment (provider implied by the model prefix). The `req` arg is
+    accepted for backward compatibility but ignored. Bedrock uses AWS_* env creds
+    instead of LLM_API_KEY.
     """
-    provider = getattr(req, "llm_provider", "") or ""
-    if "bedrock" in provider.lower() or "aws" in provider.lower():
-        inline_aws = bool(
-            getattr(req, "aws_access_key_id", "") and
-            getattr(req, "aws_secret_access_key", "")
-        )
-        return inline_aws or bool(
-            os.environ.get("AWS_ACCESS_KEY_ID") and os.environ.get("AWS_SECRET_ACCESS_KEY")
-        )
-    return bool(getattr(req, "llm_api_key", "")) or _env_key_set(provider)
+    model = get_llm_model()
+    if not model:
+        return False
+    if model.split("/", 1)[0] == "bedrock":
+        return bool(os.environ.get("AWS_ACCESS_KEY_ID") and os.environ.get("AWS_SECRET_ACCESS_KEY"))
+    return bool(get_llm_api_key())

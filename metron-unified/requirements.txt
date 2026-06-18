@@ -5,6 +5,9 @@ python-multipart>=0.0.9
 pydantic>=2.0.0
 python-dotenv>=1.0.0
 
+# ── Database (PostgreSQL — run history & project configs) ─────────────────────
+psycopg2-binary>=2.9.0
+
 # ── Async HTTP ───────────────────────────────────────────────────────────────
 aiohttp>=3.9.0
 

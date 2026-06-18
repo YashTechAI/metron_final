@@ -38,7 +38,7 @@ def report_to_json(report: AggregatedReport) -> Dict[str, Any]:
     return data
 
 
-_FULL_RUN_ROLES = {"all", "tenant_admin", "super_admin"}
+_FULL_RUN_ROLES = {"all"}
 
 
 _RQ_ONLY_ROLES = {"performance", "load", "performance+load"}

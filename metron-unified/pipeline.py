@@ -78,8 +78,6 @@ _ROLE_PHASES: Dict[str, set] = {
     "functional+quality":  {"functional", "quality"},
     "performance+load":    {"performance", "load"},
     "all":                 _ALL_PHASES,
-    "tenant_admin":        _ALL_PHASES,
-    "super_admin":         _ALL_PHASES,
 }
 
 def _allowed_phases(user_role: str) -> set:
@@ -780,7 +778,7 @@ async def run_pipeline(
         if report.rca:
             final_json["rca"] = report.rca.model_dump()
 
-        _full_run_roles = {"all", "tenant_admin", "super_admin"}
+        _full_run_roles = {"all"}
         _is_full_run = user_role in _full_run_roles
 
         # ── Token tracking: write to MLflow, read back, store in memory ─────────
