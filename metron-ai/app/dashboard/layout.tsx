@@ -1,9 +1,9 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname, useRouter } from "next/navigation";
+import { usePathname } from "next/navigation";
 import { useState, useEffect } from "react";
-import { fetchAuthSession, signOut } from "aws-amplify/auth";
+import { authFetch } from "@/lib/api";
 
 export default function DashboardLayout({
   children,
@@ -11,90 +11,30 @@ export default function DashboardLayout({
   children: React.ReactNode;
 }) {
   const pathname = usePathname();
-  const router = useRouter();
   const [isCollapsed, setIsCollapsed] = useState(false);
   const [userEmail, setUserEmail] = useState("");
   const [orgName, setOrgName] = useState("");
 
-  console.log("[DashboardLayout] Rendering (not just mounted)", {
-    pathname,
-    timestamp: new Date().toISOString()
-  });
-
   useEffect(() => {
-    console.log("[DashboardLayout] ✓ Component mounted");
-    console.log("[DashboardLayout] Current URL:", window.location.href);
-    console.log("[DashboardLayout] Current pathname:", pathname);
+    // Auth is enforced by the platform proxy; just load the caller's identity.
     let isMounted = true;
-
-    fetchAuthSession()
-      .then((session) => {
-        if (!isMounted) return;
-        console.log("[DashboardLayout] ✓ fetchAuthSession succeeded:", {
-          hasTokens: !!session.tokens,
-          email: session.tokens?.idToken?.payload?.email || "NO EMAIL",
-        });
-
-        if (session.tokens) {
-          const email = (session.tokens.idToken?.payload?.email as string) ?? "";
-          console.log("[DashboardLayout] Got email from token on first try:", email);
-          setUserEmail(email);
-          fetch("/api/quota", { headers: { Authorization: `Bearer ${session.tokens.idToken!.toString()}` } })
-            .then(r => r.ok ? r.json() : null)
-            .then(d => { if (d?.tenant_name) setOrgName(d.tenant_name); })
-            .catch(() => {});
-          return;
-        }
-
-        // tokens absent — one retry after a tick (handles Amplify init race)
-        console.log("[DashboardLayout] No tokens on first attempt, waiting 300ms and retrying...");
-        return new Promise<void>((resolve) => setTimeout(resolve, 300))
-          .then(() => {
-            if (!isMounted) return Promise.resolve(undefined);
-            console.log("[DashboardLayout] Retrying fetchAuthSession...");
-            return fetchAuthSession();
-          })
-          .then((s) => {
-            if (!isMounted || !s) return;
-            console.log("[DashboardLayout] Second fetchAuthSession result:", {
-              hasTokens: !!s.tokens,
-              tokenKeys: s.tokens ? Object.keys(s.tokens) : [],
-              hasIdToken: !!s.tokens?.idToken,
-            });
-
-            if (s.tokens) {
-              const email = (s.tokens.idToken?.payload?.email as string) ?? "";
-              console.log("[DashboardLayout] Got email from token on retry:", email);
-              setUserEmail(email);
-              fetch("/api/quota", { headers: { Authorization: `Bearer ${s.tokens.idToken!.toString()}` } })
-                .then(r => r.ok ? r.json() : null)
-                .then(d => { if (d?.tenant_name) setOrgName(d.tenant_name); })
-                .catch(() => {});
-            } else {
-              console.warn("[DashboardLayout] Still no tokens after retry, but allowing dashboard to load");
-            }
-          });
+    authFetch("/api/quota")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => {
+        if (!isMounted || !d) return;
+        if (d.email) setUserEmail(d.email);
+        if (d.tenant_name) setOrgName(d.tenant_name);
       })
-      .catch((err) => {
-        if (!isMounted) return;
-        console.error("[DashboardLayout] Error fetching auth session:", {
-          message: err?.message,
-          code: (err as any)?.code,
-          name: err?.name,
-          fullError: err
-        });
-        console.warn("[DashboardLayout] Auth session fetch failed, but allowing dashboard to load (API calls will handle auth)");
-      });
-
+      .catch(() => {});
     return () => {
       isMounted = false;
     };
-  }, [router]);
+  }, []);
 
-  const handleLogout = async () => {
-    await signOut();
-    document.cookie = "metron_session=; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/";
-    window.location.href = "/";
+  const handleLogout = () => {
+    // Logout is owned by the host platform. Point at its logout URL if provided,
+    // otherwise fall back to the platform root.
+    window.location.href = process.env.NEXT_PUBLIC_LOGOUT_URL || "/";
   };
 
   const navLinks = [

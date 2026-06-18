@@ -1,23 +1,14 @@
-import { fetchAuthSession } from "aws-amplify/auth";
- 
+/**
+ * Authenticated fetch.
+ *
+ * Metron runs embedded behind the host platform's reverse proxy, which injects
+ * the `Authorization: Bearer <keycloak-token>` header on every request before it
+ * reaches the backend. The frontend therefore does NOT handle tokens itself — it
+ * just forwards cookies (credentials) so the proxy can identify the session.
+ */
 export async function authFetch(
   input: RequestInfo | URL,
   init?: RequestInit
 ): Promise<Response> {
-  let token = "";
-  try {
-    const session = await fetchAuthSession();
-    token = session.tokens?.idToken?.toString() ?? "";
-  } catch {
-    // not signed in — backend will return 401
-  }
- 
-  const headers = new Headers(init?.headers);
-  if (token) {
-    headers.set("Authorization", `Bearer ${token}`);
-  }
- 
-  return fetch(input, { ...init, headers });
+  return fetch(input, { ...init, credentials: "include" });
 }
- 
- 
