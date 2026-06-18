@@ -94,3 +94,5 @@ mlflow.db
 # Added by code-review-graph
 .code-review-graph/
 .claude/
+claude/
+.claude/
