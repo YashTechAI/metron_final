@@ -272,6 +272,9 @@ class RunConfig(BaseModel):
     load_duration_seconds:  int  = 30
 
     # LLM
+    # organization_id (from the JWT) selects this org's LLM config from the NIA DB.
+    # Empty → fall back to the .env LLM_MODEL/LLM_API_KEY (local dev).
+    organization_id:      str = ""
     llm_provider:         str = "Groq"
     llm_api_key:          str = ""
     azure_endpoint:       str = ""   # required for Azure OpenAI — base URL e.g. https://my-resource.openai.azure.com/
@@ -595,6 +598,7 @@ class PreviewRequest(BaseModel):
     application_type:     str = "chatbot"
     num_personas:         int = 3
     num_scenarios:        int = 5
+    organization_id:      str = ""
     llm_provider:         str = "Groq"
     llm_api_key:          str = ""
     azure_endpoint:       str = ""
@@ -614,6 +618,7 @@ class ConnectTestRequest(BaseModel):
 
 class ParseDocumentRequest(BaseModel):
     document_text:   str
+    organization_id: str = ""
     llm_provider:    str = "Groq"
     llm_api_key:     str = ""
     azure_endpoint:  str = ""

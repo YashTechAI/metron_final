@@ -216,13 +216,14 @@ async def connect_test(req: ConnectTestRequest, request: Request):
 # ──────────────────────────────────────────────────────────────────────────
 @app.post("/api/parse-document")
 async def parse_document_endpoint(req: ParseDocumentRequest, request: Request):
-    get_current_user(request)
+    user = get_current_user(request)
     if not req.document_text.strip():
         raise HTTPException(400, "document_text is required")
     if not _has_credentials():
-        raise HTTPException(400, "LLM_MODEL / LLM_API_KEY not configured on the server")
+        raise HTTPException(400, "No LLM configured: set up this org in the NIA DB, or set LLM_MODEL / LLM_API_KEY")
 
-    llm_client = LLMClient()   # model + key from env (LLM_MODEL / LLM_API_KEY)
+    # Per-org LLM config (org id from JWT); falls back to .env when no org / NIA DB.
+    llm_client = LLMClient(organization_id=user.get("organization_id", ""))
     profile = await parse_document(req.document_text, llm_client)
     return {
         "application_type":  profile.application_type.value,
@@ -245,7 +246,7 @@ async def parse_architecture_endpoint(
     content:        str           = Form(""),
     image:          Optional[UploadFile] = File(None),
 ):
-    get_current_user(request)
+    user = get_current_user(request)
     """
     Parse an architecture document (text) or diagram (image) and return
     structured architecture fields ready to populate the configure form.
@@ -258,7 +259,8 @@ async def parse_architecture_endpoint(
     if not content.strip() and not image:
         raise HTTPException(400, "Provide either text content or an image file")
 
-    llm_client = LLMClient()   # model + key from env (LLM_MODEL / LLM_API_KEY)
+    # Per-org LLM config (org id from JWT); falls back to .env when no org / NIA DB.
+    llm_client = LLMClient(organization_id=user.get("organization_id", ""))
 
     if image:
         raw_bytes  = await image.read()
@@ -276,13 +278,14 @@ async def parse_architecture_endpoint(
 # ──────────────────────────────────────────────────────────────────────────
 @app.post("/api/preview")
 async def preview(req: PreviewRequest, request: Request):
-    get_current_user(request)
+    user = get_current_user(request)
     if not req.agent_description.strip():
         raise HTTPException(400, "agent_description is required")
     if not _has_credentials():
-        raise HTTPException(400, "LLM_MODEL / LLM_API_KEY not configured on the server")
+        raise HTTPException(400, "No LLM configured: set up this org in the NIA DB, or set LLM_MODEL / LLM_API_KEY")
 
-    llm_client = LLMClient()   # model + key from env (LLM_MODEL / LLM_API_KEY)
+    # Per-org LLM config (org id from JWT); falls back to .env when no org / NIA DB.
+    llm_client = LLMClient(organization_id=user.get("organization_id", ""))
 
     from stages.s0_profile.document_parser import build_profile_from_config
     profile = build_profile_from_config(
@@ -438,9 +441,11 @@ async def run_tests(
             print(f"[API] Could not parse ground truth file: {e}")
 
     run_config = RunConfig(**config_data)
+    # Org id from the JWT selects this org's LLM config from the NIA DB (per-org).
+    run_config.organization_id = user.get("organization_id", "")
 
-    if not _has_credentials():
-        raise HTTPException(400, "LLM_MODEL / LLM_API_KEY not configured on the server")
+    if not _has_credentials(run_config):
+        raise HTTPException(400, "No LLM configured: set up this org in the NIA DB, or set LLM_MODEL / LLM_API_KEY")
 
     # Read uploaded document
     doc_text = ""
@@ -752,13 +757,16 @@ async def get_quota(request: Request):
 
 # ── Helpers ────────────────────────────────────────────────────────────────
 def _has_credentials(req=None) -> bool:
-    """True when the server has an LLM configured in the environment.
+    """True when an LLM can be resolved for this request.
 
-    The LLM used to run evaluations now comes entirely from LLM_MODEL / LLM_API_KEY
-    in the environment (provider implied by the model prefix). The `req` arg is
-    accepted for backward compatibility but ignored. Bedrock uses AWS_* env creds
-    instead of LLM_API_KEY.
+    Two sources, in priority order:
+      1. Per-org config from the NIA DB — assumed available when NIA is configured
+         AND the request carries an organization_id (resolved per-org at call time).
+      2. .env LLM_MODEL / LLM_API_KEY (local-dev fallback; Bedrock uses AWS_* env).
     """
+    from core.nia_connection import is_configured
+    if is_configured() and getattr(req, "organization_id", ""):
+        return True
     model = get_llm_model()
     if not model:
         return False

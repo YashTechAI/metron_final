@@ -106,7 +106,10 @@ def verify_token(token: str) -> Optional[dict]:
             or claims.get("preferred_username")
             or claims.get("sub", "")
         )
-        return {"email": email}
+        # Platform stuffs org context under the "custom-data" claim.
+        custom = claims.get("custom-data") or {}
+        organization_id = custom.get("organization_id", "") if isinstance(custom, dict) else ""
+        return {"email": email, "organization_id": organization_id}
     except Exception as exc:
         print(f"[Auth] Token verification failed: {exc}")
         return None
@@ -123,7 +126,12 @@ def get_current_user(request: Request) -> dict:
     development (never set this in production).
     """
     if os.environ.get("METRON_AUTH_BYPASS", "").strip() == "1":
-        return {"email": "dev@local.test", "role": _FULL_ACCESS_ROLE}
+        return {
+            "email": "dev@local.test",
+            "role": _FULL_ACCESS_ROLE,
+            # Optional dev org for exercising the NIA dynamic-config path locally.
+            "organization_id": os.environ.get("METRON_DEV_ORG_ID", ""),
+        }
 
     auth_header = request.headers.get("Authorization", "")
     if not auth_header.startswith("Bearer "):

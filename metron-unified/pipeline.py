@@ -149,14 +149,9 @@ async def run_pipeline(
     job_store[run_id]["status"] = "running"
     phases = _allowed_phases(user_role)
     job_store[run_id]["allowed_phases"] = sorted(phases)
-    llm_client = LLMClient(
-        config.llm_provider, config.llm_api_key,
-        azure_endpoint=config.azure_endpoint,
-        aws_access_key_id=getattr(config, "aws_access_key_id", "") or "",
-        aws_secret_access_key=getattr(config, "aws_secret_access_key", "") or "",
-        aws_region=getattr(config, "aws_region", "") or "",
-        bedrock_model_id=getattr(config, "bedrock_model_id", "") or "",
-    )
+    # Per-org LLM config from the NIA DB (org id from the JWT, threaded via RunConfig);
+    # falls back to .env LLM_MODEL/LLM_API_KEY when no org / NIA DB (local dev).
+    llm_client = LLMClient(organization_id=getattr(config, "organization_id", ""))
 
     try:
         # ── Stage 0: App Profile ───────────────────────────────────────────

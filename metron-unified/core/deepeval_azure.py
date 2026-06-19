@@ -188,68 +188,55 @@ def _make_deepeval_litellm_model(model_name: str, litellm_kwargs: Dict[str, Any]
 
 def make_deepeval_model(config=None):
     """
-    Provider-agnostic factory: returns the right DeepEvalBaseLLM for config.llm_provider.
+    Build the DeepEval judge model. Resolution priority:
+      1. Per-org config from the NIA DB (when config.organization_id + NIA configured)
+      2. .env LLM_MODEL / LLM_API_KEY (local-dev fallback)
 
-    Dispatch:
-      Azure      → make_deepeval_azure_model() (native AzureOpenAI client, unchanged)
-      Gemini     → LiteLLM wrapper (model from config, e.g. gemini/gemini-2.0-flash)
-      AWS Bedrock→ LiteLLM wrapper (bedrock/claude-3-5-sonnet) + AWS credentials
-      Others     → LiteLLM wrapper (Groq / NIM) with provider API key
+    Provider is implied by the model prefix:
+      azure/      → native AzureOpenAI client (AZURE_OPENAI_ENDPOINT/_API_KEY)
+      bedrock/    → LiteLLM wrapper + AWS creds (from org config or env)
+      gemini/…    → LiteLLM wrapper with the resolved api_key (+ thinking_budget 0)
+      nvidia_nim/ → LiteLLM wrapper with api_key + NVIDIA api_base
 
-    Returns None when deepeval is not installed or credentials are missing.
+    Returns None when deepeval is unavailable or credentials are missing.
     """
-    if config is None:
+    org_id = getattr(config, "organization_id", "") if config is not None else ""
+    from core.llm_client import _resolve_org_config
+    resolved = _resolve_org_config(org_id)
+    if resolved is not None:
+        model_name, api_key, extra, _pricing = resolved
+    else:
+        from core.config import get_llm_model, get_llm_api_key
+        model_name, api_key, extra = get_llm_model(), get_llm_api_key(), {}
+
+    prefix = model_name.split("/", 1)[0] if "/" in model_name else ""
+
+    if prefix == "azure":
         return make_deepeval_azure_model()
 
-    provider = (getattr(config, "llm_provider", "") or "").lower()
-
-    if "azure" in provider:
-        return make_deepeval_azure_model()
-
-    if "gemini" in provider or "google" in provider:
-        api_key = getattr(config, "llm_api_key", "") or os.environ.get("GEMINI_API_KEY", "")
-        if not api_key:
-            return None
-        from core.config import get_model
-        model_name = get_model(getattr(config, "llm_provider", "Google Gemini"), "judge")
-        return _make_deepeval_litellm_model(
-            model_name,
-            {"api_key": api_key},
-        )
-
-    if "bedrock" in provider or "aws" in provider:
-        aws_key    = getattr(config, "aws_access_key_id", "")    or os.environ.get("AWS_ACCESS_KEY_ID", "")
-        aws_secret = getattr(config, "aws_secret_access_key", "") or os.environ.get("AWS_SECRET_ACCESS_KEY", "")
-        aws_region = getattr(config, "aws_region", "")            or os.environ.get("AWS_DEFAULT_REGION", "us-east-1")
+    if prefix == "bedrock":
+        aws_key    = extra.get("aws_access_key_id")     or os.environ.get("AWS_ACCESS_KEY_ID", "")
+        aws_secret = extra.get("aws_secret_access_key") or os.environ.get("AWS_SECRET_ACCESS_KEY", "")
+        aws_region = (extra.get("aws_region_name") or extra.get("aws_region")
+                      or os.environ.get("AWS_DEFAULT_REGION", "us-east-1"))
         if not aws_key or not aws_secret:
             return None
-        model_id = (getattr(config, "bedrock_model_id", "") or "").strip() or "anthropic.claude-3-5-sonnet-20241022-v2:0"
-        return _make_deepeval_litellm_model(
-            f"bedrock/{model_id}",
-            {
-                "aws_access_key_id":     aws_key,
-                "aws_secret_access_key": aws_secret,
-                "aws_region_name":       aws_region,
-            },
-        )
+        return _make_deepeval_litellm_model(model_name, {
+            "aws_access_key_id":     aws_key,
+            "aws_secret_access_key": aws_secret,
+            "aws_region_name":       aws_region,
+        })
 
-    # Groq / NVIDIA NIM / others — use the primary model key
-    from core.config import get_model, LLM_PROVIDERS
-    model_name = get_model(getattr(config, "llm_provider", "Groq"), "judge")
-    api_key    = getattr(config, "llm_api_key", "") or ""
-    provider_info = LLM_PROVIDERS.get(getattr(config, "llm_provider", "Groq"), {})
-    if not api_key:
-        env_key = provider_info.get("env_key", "")
-        api_key = os.environ.get(env_key, "") if env_key else ""
-    if not api_key:
+    if not model_name or not api_key:
         return None
 
-    prefix = model_name.split("/")[0] if "/" in model_name else ""
-    kwargs: Dict[str, Any] = {}
-    if prefix == "groq":
-        kwargs["api_key"] = api_key
-    elif prefix == "nvidia_nim":
-        kwargs["api_key"] = api_key
+    kwargs: Dict[str, Any] = {"api_key": api_key}
+    if prefix == "nvidia_nim":
         kwargs["api_base"] = "https://integrate.api.nvidia.com/v1"
+    if prefix == "gemini":
+        kwargs.setdefault("thinking_budget", 0)
+    # Merge extra provider config from the org record (api_base, api_version, …).
+    for k, v in extra.items():
+        kwargs.setdefault(k, v)
 
     return _make_deepeval_litellm_model(model_name, kwargs)

@@ -61,6 +61,35 @@ class RateLimiter:
             await asyncio.sleep(sleep_time)
 
 
+# ── Per-org config resolution (NIA DB + KMS) ───────────────────────────────
+
+def _resolve_org_config(organization_id: str):
+    """Resolve an org's LLM config from the NIA DB. Returns
+    (model, api_key, extra_kwargs, pricing_info) or None to use the .env fallback.
+
+    None when: no org id, NIA DB not configured (local dev), or any lookup error.
+    """
+    if not organization_id:
+        return None
+    try:
+        from core.nia_connection import is_configured
+        if not is_configured():
+            return None
+        from core.dynamic_config import fetch_llm_config_and_pricing, _application_name
+        cfg = fetch_llm_config_and_pricing(organization_id, _application_name())
+        provider = str(cfg["provider_name"]).strip()
+        model_code = str(cfg["model_code"]).strip().lower()
+        model = f"{provider}/{model_code}"
+        # Copy so the cached dynamic config stays immutable; pull the key out.
+        decrypted = dict(cfg.get("decrypted_config") or {})
+        api_key = decrypted.pop("api_key", "")
+        return model, api_key, decrypted, (cfg.get("pricing_info") or {})
+    except Exception as e:
+        print(f"[LLMClient] org config resolution failed ({e}); "
+              f"falling back to .env LLM config")
+        return None
+
+
 # ── Unified LLM Client ─────────────────────────────────────────────────────
 
 class LLMClient:
@@ -78,7 +107,8 @@ class LLMClient:
 
     def __init__(
         self,
-        provider_name: str = "Groq",
+        organization_id: str = "",
+        provider_name: str = "",   # legacy positional args — ignored (kept for compat)
         api_key: str = "",
         azure_endpoint: str = "",
         aws_access_key_id: str = "",
@@ -86,12 +116,21 @@ class LLMClient:
         aws_region: str = "",
         bedrock_model_id: str = "",
     ):
-        # Model, key, and provider all come from the environment (LLM_MODEL /
-        # LLM_API_KEY). The constructor args are accepted for backward
-        # compatibility with existing call sites but ignored.
+        # Model + key resolution, in priority order:
+        #   1. Per-org config from the NIA DB (when organization_id + NIA configured)
+        #   2. .env LLM_MODEL / LLM_API_KEY (local dev fallback)
         apply_llm_env()   # bridge LLM_API_KEY → provider env var (e.g. GEMINI_API_KEY)
-        self.model = get_llm_model()
-        self.api_key = get_llm_api_key()
+        self.organization_id = organization_id
+        self.extra_kwargs: dict = {}      # provider config (api_base, api_version, …) from NIA
+        self._rai_pricing_info: dict = {}  # per-org pricing, for token observability
+
+        resolved = _resolve_org_config(organization_id)
+        if resolved is not None:
+            self.model, self.api_key, self.extra_kwargs, self._rai_pricing_info = resolved
+        else:
+            self.model = get_llm_model()
+            self.api_key = get_llm_api_key()
+
         self.prefix = self.model.split("/", 1)[0] if "/" in self.model else self.model
         self.provider_name = provider_from_model(self.model)
         # Azure / Bedrock extras are read from env in _call(); kept as attrs for
@@ -100,9 +139,10 @@ class LLMClient:
         self.aws_access_key_id = os.environ.get("AWS_ACCESS_KEY_ID", "").strip()
         self.aws_secret_access_key = os.environ.get("AWS_SECRET_ACCESS_KEY", "").strip()
         self.aws_region = os.environ.get("AWS_DEFAULT_REGION", "").strip() or "us-east-1"
-        self.bedrock_model_id = ""   # full model lives in LLM_MODEL now
+        self.bedrock_model_id = ""   # full model lives in self.model now
         if not self.model:
-            print("[LLMClient] WARNING: LLM_MODEL is not set in the environment.")
+            print("[LLMClient] WARNING: no model configured (no NIA org config and "
+                  "LLM_MODEL unset).")
         # rpm: LLM_RPM override, else the matched provider's registry rpm, else 30.
         _rpm_env = os.environ.get("LLM_RPM", "").strip()
         _rpm = int(_rpm_env) if _rpm_env.isdigit() else \
@@ -298,6 +338,16 @@ class LLMClient:
             if aws_secret:
                 kwargs["aws_secret_access_key"] = aws_secret
             kwargs["aws_region_name"] = aws_region
+
+        # Disable Gemini "thinking" so it doesn't consume the output token budget
+        # (mirrors the platform's enforce_zero_thinking_budget for Gemini/Google).
+        if prefix == "gemini" or "google" in self.provider_name.lower():
+            kwargs.setdefault("thinking_budget", 0)
+
+        # Merge provider config from the org's NIA record (api_base, api_version,
+        # aws creds, etc.) without overriding anything set explicitly above.
+        for _k, _v in self.extra_kwargs.items():
+            kwargs.setdefault(_k, _v)
 
         _t0 = time.monotonic()
         response = await asyncio.wait_for(litellm.acompletion(**kwargs), timeout=45)

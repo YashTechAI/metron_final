@@ -7,6 +7,8 @@ python-dotenv>=1.0.0
 
 # ── Database (PostgreSQL — run history & project configs) ─────────────────────
 psycopg2-binary>=2.9.0
+sqlalchemy>=2.0          # NIA DB engine for per-org LLM config lookup
+cachetools>=5.3          # TTL cache for per-org dynamic config
 
 # ── Async HTTP ───────────────────────────────────────────────────────────────
 aiohttp>=3.9.0
