@@ -55,6 +55,10 @@ ENV/
 .env.*.local
 # .env.example and users.json.example ARE committed (they're templates with no real secrets)
 
+# Throwaway local auth-testing files (hold live Keycloak tokens — never commit)
+_tok.txt
+test_auth.py
+
 # Auth — real user list with plaintext passwords (never commit)
 users.json
 

@@ -31,6 +31,11 @@ from fastapi import HTTPException, Request
 # and passes every admin/super check, i.e. full access to the platform.
 _FULL_ACCESS_ROLE = "platform_admin"
 
+# The host platform's gateway appends this marker to the bearer token; the real
+# JWT is everything BEFORE it. Splitting on it is harmless when it's absent.
+# (Mirrors the deployed platform middleware: token.split("$YashUnified2025$")[0].)
+_TOKEN_MARKER = "$YashUnified2025$"
+
 
 def _base_url() -> str:
     return os.environ.get("KEYCLOAK_URL", "").rstrip("/")
@@ -123,7 +128,8 @@ def get_current_user(request: Request) -> dict:
     auth_header = request.headers.get("Authorization", "")
     if not auth_header.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Not authenticated")
-    token = auth_header[7:]
+    # Strip the platform-appended marker — the real JWT is everything before it.
+    token = auth_header[7:].split(_TOKEN_MARKER, 1)[0].strip()
     user = verify_token(token)
     if not user:
         raise HTTPException(status_code=401, detail="Invalid or expired token")
