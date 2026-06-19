@@ -204,8 +204,8 @@ async def evaluate_quality(
 
     deval_model = make_deepeval_model(config)
     if deval_model is None:
-        print(f"[QualityEval] WARNING: {config.llm_provider} credentials not configured — "
-              "GEval quality criteria will be skipped.")
+        print("[QualityEval] WARNING: LLM judge not configured (no NIA org config / .env "
+              "LLM_MODEL) — GEval quality criteria will be skipped.")
 
     persona_map  = {p.persona_id: p for p in personas}
     results: List[MetricResult] = []

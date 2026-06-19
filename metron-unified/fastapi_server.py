@@ -15,20 +15,17 @@ load_dotenv()
 
 from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from core.auth import get_current_user
 from core.config import CORS_ORIGINS, get_llm_model, get_llm_api_key, apply_llm_env
 from core.llm_client import LLMClient
 from core.models import (
-    ApplicationType, ConnectTestRequest, JobStatus,
-    ParseDocumentRequest, PreviewRequest, RunConfig,
+    ApplicationType, ConnectTestRequest, PreviewRequest, RunConfig,
 )
 from core.adapters.chatbot import ChatbotAdapter
 from core import db as _db
 from pipeline import run_pipeline
-from stages.s0_profile.document_parser import parse_document
 from stages.s0_profile.architecture_parser import parse_architecture_text, parse_architecture_image
 from stages.s1_personas.fishbone_builder import build_slots
 from stages.s1_personas.persona_builder import build_all_personas
@@ -209,32 +206,6 @@ async def connect_test(req: ConnectTestRequest, request: Request):
     )
     success, message = await adapter.test_connection()
     return {"success": success, "message": message}
-
-
-# ──────────────────────────────────────────────────────────────────────────
-# POST /api/parse-document — NEW: seed doc → AppProfile
-# ──────────────────────────────────────────────────────────────────────────
-@app.post("/api/parse-document")
-async def parse_document_endpoint(req: ParseDocumentRequest, request: Request):
-    user = get_current_user(request)
-    if not req.document_text.strip():
-        raise HTTPException(400, "document_text is required")
-    if not _has_credentials():
-        raise HTTPException(400, "No LLM configured: set up this org in the NIA DB, or set LLM_MODEL / LLM_API_KEY")
-
-    # Per-org LLM config (org id from JWT); falls back to .env when no org / NIA DB.
-    llm_client = LLMClient(organization_id=user.get("organization_id", ""))
-    profile = await parse_document(req.document_text, llm_client)
-    return {
-        "application_type":  profile.application_type.value,
-        "domain":            profile.domain,
-        "user_types":        profile.user_types,
-        "use_cases":         profile.use_cases,
-        "domain_vocabulary": profile.domain_vocabulary,
-        "boundaries":        profile.boundaries,
-        "success_criteria":  profile.success_criteria,
-        "agents":            [a.model_dump() for a in profile.agents],
-    }
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -481,7 +452,6 @@ async def run_tests(
         "config_summary": {
             "endpoint_url":    run_config.endpoint_url,
             "agent_domain":    run_config.agent_domain,
-            "llm_provider":    run_config.llm_provider,
             "application_type": run_config.application_type.value,
         },
     }
@@ -648,44 +618,11 @@ async def get_project_runs(project_id: str, request: Request):
 
 
 # ──────────────────────────────────────────────────────────────────────────
-# GET /api/runs/{run_id_a}/compare/{run_id_b} — Fix 28: regression diff
-# ──────────────────────────────────────────────────────────────────────────
-@app.get("/api/runs/{run_id_a}/compare/{run_id_b}")
-async def compare_runs(run_id_a: str, run_id_b: str, request: Request):
-    user = get_current_user(request)
-    """Compare health scores and class pass-rates between two runs."""
-    # Ownership check — allow if user_email is absent (legacy rows pre-fix)
-    for rid in (run_id_a, run_id_b):
-        job = jobs.get(rid)
-        if job:
-            _check_job_ownership(job, user["email"])
-        else:
-            db_row = _db.get_run(rid)
-            if db_row:
-                owner = db_row.get("user_email", "")
-                if owner and owner != user["email"]:
-                    raise HTTPException(403, f"Access denied to run {rid}")
-    try:
-        diff = _db.compare_runs(run_id_a, run_id_b)
-        if "error" in diff:
-            raise HTTPException(404, diff["error"])
-        return diff
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(500, f"Compare error: {e}")
-
-
-# ──────────────────────────────────────────────────────────────────────────
-# Auth endpoints — login/logout handled by the host platform's Keycloak.
+# Auth — login/logout are handled by the host platform's Keycloak.
 # /api/auth/me validates the injected Keycloak Bearer token and returns the
-# caller's email. There is no authorization gating — any valid token is allowed.
+# caller's identity ({email, role, organization_id}). There is no authorization
+# gating — any valid token is allowed. This is the single identity endpoint.
 # ──────────────────────────────────────────────────────────────────────────
-
-@app.post("/api/auth/logout")
-async def auth_logout():
-    return JSONResponse({"ok": True})
-
 
 @app.get("/api/auth/me")
 async def auth_me(request: Request):
@@ -739,20 +676,6 @@ async def delete_project(project_id: str, request: Request):
         raise HTTPException(status_code=403, detail="Not your project")
     _db.delete_project(project_id)
     return {"ok": True}
-
-
-# ──────────────────────────────────────────────────────────────────────────
-# GET /api/quota  — current user's identity (email + role)
-# Quota/authorization removed; kept under this path for the frontend identity fetch.
-# ──────────────────────────────────────────────────────────────────────────
-@app.get("/api/quota")
-async def get_quota(request: Request):
-    # Authorization removed — every authenticated user has full, unlimited access.
-    user = get_current_user(request)
-    return {
-        "email": user["email"],
-        "role": user["role"],
-    }
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────

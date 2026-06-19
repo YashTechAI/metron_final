@@ -272,16 +272,11 @@ class RunConfig(BaseModel):
     load_duration_seconds:  int  = 30
 
     # LLM
-    # organization_id (from the JWT) selects this org's LLM config from the NIA DB.
-    # Empty → fall back to the .env LLM_MODEL/LLM_API_KEY (local dev).
+    # organization_id is SERVER-SET, not client-supplied: /api/run overwrites it
+    # from the JWT. It selects this org's LLM config (provider/model/key) from the
+    # NIA DB. Empty → fall back to the .env LLM_MODEL/LLM_API_KEY (local dev).
+    # The frontend must NOT send it.
     organization_id:      str = ""
-    llm_provider:         str = "Groq"
-    llm_api_key:          str = ""
-    azure_endpoint:       str = ""   # required for Azure OpenAI — base URL e.g. https://my-resource.openai.azure.com/
-    aws_access_key_id:    str = ""   # AWS Bedrock — access key ID
-    aws_secret_access_key: str = ""  # AWS Bedrock — secret access key
-    aws_region:           str = "us-east-1"  # AWS Bedrock — region
-    bedrock_model_id:     str = ""   # AWS Bedrock — user-selected model ID (without bedrock/ prefix)
 
     # Security
     selected_attacks:      List[str] = ["jailbreak", "prompt_injection", "pii_extraction", "toxicity", "encoding"]
@@ -577,19 +572,6 @@ class PersonaFeedback(BaseModel):
     suggested_action: str = "keep"   # strengthen | generate_variants | retire | keep
 
 
-# ── Job Store Entry ────────────────────────────────────────────────────────
-
-class JobStatus(BaseModel):
-    run_id:        str
-    status:        str = "queued"   # queued | running | completed | failed
-    progress:      int = 0          # 0-100
-    message:       str = ""
-    current_phase: str = ""
-    phase_results: Dict[str, Any] = {}
-    error:         Optional[str] = None
-    results:       Optional[Dict[str, Any]] = None
-
-
 # ── API Request/Response models ────────────────────────────────────────────
 
 class PreviewRequest(BaseModel):
@@ -598,14 +580,8 @@ class PreviewRequest(BaseModel):
     application_type:     str = "chatbot"
     num_personas:         int = 3
     num_scenarios:        int = 5
+    # SERVER-SET from the JWT — the frontend must NOT send it.
     organization_id:      str = ""
-    llm_provider:         str = "Groq"
-    llm_api_key:          str = ""
-    azure_endpoint:       str = ""
-    aws_access_key_id:    str = ""
-    aws_secret_access_key: str = ""
-    aws_region:           str = "us-east-1"
-    bedrock_model_id:     str = ""
 
 class ConnectTestRequest(BaseModel):
     endpoint_url:         str
@@ -615,10 +591,3 @@ class ConnectTestRequest(BaseModel):
     auth_token:           str = ""
     request_template:     Optional[str] = None
     response_trim_marker: Optional[str] = None
-
-class ParseDocumentRequest(BaseModel):
-    document_text:   str
-    organization_id: str = ""
-    llm_provider:    str = "Groq"
-    llm_api_key:     str = ""
-    azure_endpoint:  str = ""

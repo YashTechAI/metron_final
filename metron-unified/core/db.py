@@ -281,54 +281,6 @@ def get_runs_for_project(project_id: str, limit: int = 200) -> List[Dict[str, An
         _put(conn)
 
 
-def compare_runs(run_id_a: str, run_id_b: str) -> Dict[str, Any]:
-    """
-    Basic diff between two runs: health score delta and per-class pass-rate change.
-    Returns a summary dict suitable for the /api/runs/{a}/compare/{b} endpoint.
-    """
-    a = get_run(run_id_a)
-    b = get_run(run_id_b)
-
-    if not a or not b:
-        missing = []
-        if not a:
-            missing.append(run_id_a)
-        if not b:
-            missing.append(run_id_b)
-        return {"error": f"Run(s) not found: {missing}"}
-
-    res_a = a.get("results", {})
-    res_b = b.get("results", {})
-
-    health_a = a.get("health_score", 0.0)
-    health_b = b.get("health_score", 0.0)
-
-    class_diff: Dict[str, Any] = {}
-    classes_a = res_a.get("test_classes", {})
-    classes_b = res_b.get("test_classes", {})
-    all_classes = set(classes_a) | set(classes_b)
-
-    for cls in sorted(all_classes):
-        pr_a = classes_a.get(cls, {}).get("pass_rate")
-        pr_b = classes_b.get(cls, {}).get("pass_rate")
-        class_diff[cls] = {
-            "run_a_pass_rate": pr_a,
-            "run_b_pass_rate": pr_b,
-            "delta": round((pr_b or 0.0) - (pr_a or 0.0), 4) if pr_a is not None and pr_b is not None else None,
-        }
-
-    return {
-        "run_id_a":     run_id_a,
-        "run_id_b":     run_id_b,
-        "timestamp_a":  a.get("timestamp"),
-        "timestamp_b":  b.get("timestamp"),
-        "health_a":     health_a,
-        "health_b":     health_b,
-        "health_delta": round(health_b - health_a, 4),
-        "class_diff":   class_diff,
-    }
-
-
 def load_recent_jobs(hours: int = 24) -> List[Dict[str, Any]]:
     """
     Fetch runs from the last N hours for in-memory job store re-population on startup.

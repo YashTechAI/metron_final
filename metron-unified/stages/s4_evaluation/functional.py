@@ -139,57 +139,18 @@ def _is_factual_reference(text: str) -> bool:
     return len(text) >= 200
 
 
-def _configure_deepeval(llm_provider: str, llm_api_key: str, azure_endpoint: str = "",
-                        aws_access_key_id: str = "", aws_secret_access_key: str = "",
-                        aws_region: str = "") -> None:
-    """Ensure provider env vars are set so LiteLLM / AzureOpenAI resolves correctly."""
-    try:
-        import os
-        p = llm_provider.lower()
-        if "azure" in p and llm_api_key:
-            os.environ["AZURE_OPENAI_API_KEY"] = llm_api_key
-        if "azure" in p and azure_endpoint:
-            os.environ["AZURE_OPENAI_ENDPOINT"] = azure_endpoint
-        if "openai" in p and "azure" not in p and llm_api_key:
-            os.environ["OPENAI_API_KEY"] = llm_api_key
-        if ("gemini" in p or "google" in p) and llm_api_key:
-            os.environ["GEMINI_API_KEY"] = llm_api_key
-        if ("bedrock" in p or "aws" in p):
-            if aws_access_key_id:
-                os.environ["AWS_ACCESS_KEY_ID"] = aws_access_key_id
-            if aws_secret_access_key:
-                os.environ["AWS_SECRET_ACCESS_KEY"] = aws_secret_access_key
-            if aws_region:
-                os.environ["AWS_DEFAULT_REGION"] = aws_region
-    except Exception:
-        pass
-
-
-def _set_azure_env(config: RunConfig) -> None:
+def _set_azure_env(config=None) -> None:
     """
-    Ensure provider env vars are populated for RAGAS and DeepEval tool calls.
-    Handles Azure, Gemini, and AWS Bedrock; also sets OPENAI_API_VERSION for langchain.
+    Guarantee the langchain/OpenAI API version is set for RAGAS and DeepEval tool calls.
+
+    LLM credentials are resolved centrally now, not from the run config:
+      - apply_llm_env() (run at startup) bridges the .env LLM_API_KEY → the provider
+        env var (e.g. GEMINI_API_KEY) for the local-dev fallback path.
+      - make_deepeval_model(config) applies the per-org NIA key at call time.
+    So this only needs to pin OPENAI_API_VERSION, which langchain's Azure wrapper
+    requires. `config` is accepted (and ignored) so existing callers stay unchanged.
     """
     import os
-    provider = (config.llm_provider or "").lower()
-    if "azure" in provider:
-        if config.llm_api_key:
-            os.environ["AZURE_OPENAI_API_KEY"] = config.llm_api_key
-        azure_endpoint = getattr(config, "azure_endpoint", "") or ""
-        if azure_endpoint:
-            os.environ["AZURE_OPENAI_ENDPOINT"] = azure_endpoint
-    elif "gemini" in provider or "google" in provider:
-        if config.llm_api_key:
-            os.environ["GEMINI_API_KEY"] = config.llm_api_key
-    elif "bedrock" in provider or "aws" in provider:
-        aws_key    = getattr(config, "aws_access_key_id", "")    or ""
-        aws_secret = getattr(config, "aws_secret_access_key", "") or ""
-        aws_region = getattr(config, "aws_region", "")            or "us-east-1"
-        if aws_key:
-            os.environ["AWS_ACCESS_KEY_ID"] = aws_key
-        if aws_secret:
-            os.environ["AWS_SECRET_ACCESS_KEY"] = aws_secret
-        os.environ["AWS_DEFAULT_REGION"] = aws_region
     os.environ.setdefault("OPENAI_API_VERSION", os.environ.get("AZURE_API_VERSION", "2025-01-01-preview"))
 
 
@@ -467,17 +428,11 @@ async def evaluate_functional(
     persona_map = {p.persona_id: p for p in personas}
     results: List[MetricResult] = []
 
-    _configure_deepeval(
-        config.llm_provider, config.llm_api_key,
-        getattr(config, "azure_endpoint", "") or "",
-        getattr(config, "aws_access_key_id", "") or "",
-        getattr(config, "aws_secret_access_key", "") or "",
-        getattr(config, "aws_region", "") or "",
-    )
+    _set_azure_env(config)
     deval_model = make_deepeval_model(config)
     if deval_model is None:
-        print(f"[FunctionalEval] WARNING: {config.llm_provider} credentials not configured — "
-              "DeepEval metrics (hallucination, answer_relevancy, usefulness) will be skipped.")
+        print("[FunctionalEval] WARNING: LLM judge not configured (no NIA org config / .env "
+              "LLM_MODEL) — DeepEval metrics (hallucination, answer_relevancy, usefulness) will be skipped.")
 
     # Fix 3: always default criteria only (no domain criteria from quality_criteria)
     criteria_text  = _DEFAULT_CRITERIA_TEXT

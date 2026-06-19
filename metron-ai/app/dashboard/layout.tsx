@@ -17,7 +17,7 @@ export default function DashboardLayout({
   useEffect(() => {
     // Auth is enforced by the platform proxy; just load the caller's identity.
     let isMounted = true;
-    authFetch("/api/quota")
+    authFetch("/api/auth/me")
       .then((r) => (r.ok ? r.json() : null))
       .then((d) => {
         if (!isMounted || !d) return;
