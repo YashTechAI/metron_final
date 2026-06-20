@@ -9,7 +9,9 @@
 
 ---
 
-## 0. Latest session (2026-06-20) — Gemini "thinking" truncation fix ✅
+## 0. Latest session (2026-06-20) — fixes ✅
+
+### 0.1 Functional prompts came out as generic fallbacks (Gemini "thinking" truncation)
 
 **Symptom:** Functional test prompts came out as the generic fallback
 `"Hi, I need help with <goal>."` (e.g. *"Hi, I need help with email writer agent."*)
@@ -53,6 +55,33 @@ and `make_deepeval_model().generate()` paths against live Gemini:
 
 > Note: this fixes the **truncation** (the cause of the fallback). Prompt *quality* beyond
 > "real vs. canned" is unchanged.
+
+### 0.2 Overall "Health Score" not shown (fixed — was known issue #1)
+
+**Symptom:** The results headline showed `TESTS PASSED 283/345` instead of the overall
+**Health Score %**.
+
+**Root cause:** the "full run" gate only accepted the literal role `"all"`, but auth
+assigns every valid token the role `platform_admin` (`core/auth.py` `_FULL_ACCESS_ROLE`).
+So `_is_full_run` / `isFullRun` was always False → the backend saved `health_score=None`
+to the DB column, and both backend + frontend substituted `total_passed/total_tests` for
+the headline. The score itself is always computed (`aggregator.py`) and was always present
+in the results JSON — only the role gate hid it. `platform_admin` runs all 5 phases
+(`_allowed_phases` fallback → `_ALL_PHASES`), so showing the score is correct.
+
+**Fix (additive — only `platform_admin` gains full-run status; partial roles untouched):**
+- backend: `pipeline.py` `_full_run_roles` + `stages/s7_report/report_generator.py`
+  `_FULL_RUN_ROLES` → `{"all", "platform_admin"}`.
+- frontend: `results/page.tsx` (headline + Export markdown) and `run/page.tsx`
+  `_FULL_RUN_ROLES` → include `"platform_admin"`.
+- run-history list (`project/[id]/page.tsx`) needs **no** change — it keys off
+  `health_score != null` from the DB column, which the backend fix now populates.
+
+**Verified:** `py_compile` clean (both backend files); `tsc --noEmit` exit 0.
+
+**Caveats:** reopening an old run's **Results** page now shows the score (the JSON blob
+always carried it). The run-history **list** shows it only for **new** runs — rows saved
+before this fix have `health_score=None` in the DB column and won't backfill unless re-run.
 
 ---
 
@@ -126,7 +155,8 @@ and `make_deepeval_model(config)`. litellm routes by the model prefix
 (`gemini/…`, `groq/…`, `azure/…`, `bedrock/…`, `nvidia_nim/…`).
 
 **Single model for all tasks** (fast/judge/balanced collapsed). For Gemini,
-`thinking_budget=0` is set so "thinking" tokens don't eat the output budget.
+`reasoning_effort="disable"` is set so "thinking" tokens don't eat the output budget
+(`thinking_budget=0` is silently ignored by litellm — see §0.1).
 
 ### 3.3 App database (`core/db.py`)
 - **PostgreSQL** via `psycopg2` + `ThreadedConnectionPool` (maxconn=5), `RealDictCursor`,
@@ -163,9 +193,10 @@ and `make_deepeval_model(config)`. litellm routes by the model prefix
   prefix→behaviour lookup (rpm, token_optimize).
 - **`core/llm_client.py`** — `LLMClient(organization_id=…)`; `_resolve_org_config()`
   (NIA→env); `complete()/complete_json()` use `self.model`; `extra_kwargs` merged into
-  the litellm call; Gemini `thinking_budget=0`; single-model (removed `FALLBACK_CHAIN`).
+  the litellm call; Gemini `reasoning_effort="disable"` (was the ineffective
+  `thinking_budget=0` — §0.1); single-model (removed `FALLBACK_CHAIN`).
 - **`core/deepeval_azure.py`** — `make_deepeval_model(config)` resolves judge from NIA
-  (via `config.organization_id`) else `.env`.
+  (via `config.organization_id`) else `.env`; Gemini judge `reasoning_effort="disable"` (§0.1).
 - **`core/db.py`** — rewritten for PostgreSQL (psycopg2 pool); `runs`+`projects` only;
   `_strip_nul()`; removed all tenant/user/quota functions.
 - **`core/models.py`** — added `organization_id` to `RunConfig`, `PreviewRequest`,
@@ -180,8 +211,8 @@ and `make_deepeval_model(config)`. litellm routes by the model prefix
   `apply_llm_env()` at startup; removed all `/api/admin/*` + `/api/super/*` endpoints;
   startup log says "Postgres".
 - **`pipeline.py`** — `LLMClient(organization_id=config.organization_id)`; removed
-  `tenant_admin`/`super_admin` from `_ROLE_PHASES`; `_full_run_roles = {"all"}`.
-- **`stages/s7_report/report_generator.py`** — `_FULL_RUN_ROLES = {"all"}`.
+  `tenant_admin`/`super_admin` from `_ROLE_PHASES`; `_full_run_roles = {"all", "platform_admin"}` (§0.2).
+- **`stages/s7_report/report_generator.py`** — `_FULL_RUN_ROLES = {"all", "platform_admin"}` (§0.2).
 - **`requirements.txt`** — added `psycopg2-binary`, `sqlalchemy`, `cachetools`.
 - **`.env.example`** — documents all the env vars below (placeholders).
 
@@ -197,6 +228,9 @@ and `make_deepeval_model(config)`. litellm routes by the model prefix
   **`…/builder/page.tsx`** — removed `tenant_*`, `run_limit`/`runs_used`, the
   `QuotaBanner`, the org-name reads, and dead `tenant_admin`/`super_admin` role sets.
 - **`app/ops/page.tsx`** — redirect target changed from deleted `/super` to `/dashboard`.
+- **Health-score gate (§0.2)** — `app/dashboard/project/[id]/results/page.tsx` (headline +
+  Export markdown) and `…/run/page.tsx` (`_FULL_RUN_ROLES`) now treat `platform_admin`
+  as a full run, so the Health Score % shows.
 
 ---
 
@@ -305,13 +339,11 @@ Two LLM modes (controlled by `.env`):
 
 ## 10. Known issues / TODO
 
-1. **`health_score` is always `None`** (HIGH — not yet fixed). Auth issues
-   `role=platform_admin`, but `_FULL_RUN_ROLES = {"all"}` in `pipeline.py` (~L783) and
-   `stages/s7_report/report_generator.py` (~L41). So `_is_full_run` is False → the
-   headline health score is never computed/saved. **Every production run is
-   `platform_admin`**, so the overall score is always blank. Fix: add `"platform_admin"`
-   to both sets, or base `_is_full_run` on whether all phases ran. (Per-class pass-rates
-   and `total_passed/total_tests` ARE saved — only the aggregate `health_score` is None.)
+1. ✅ **FIXED (2026-06-20) — `health_score` was always `None`.** See §0.2. Added
+   `"platform_admin"` to the full-run sets in `pipeline.py`,
+   `stages/s7_report/report_generator.py`, and the frontend gates (`results/page.tsx`,
+   `run/page.tsx`). Rows saved before the fix keep a `None` `health_score` column and
+   won't backfill unless re-run.
 2. **Target endpoint auth**: if the chatbot-under-test returns 401 (bad/missing bearer
    token), functional/quality/load score 0.0 (no valid responses). External — supply the
    target's token in the run config.
@@ -337,7 +369,7 @@ Two LLM modes (controlled by `.env`):
 - [ ] `CORS_ORIGINS` → the deployed frontend origin(s).
 - [ ] `.env` is gitignored; never commit secrets. Delete/gitignore `test_litellm_hello.py`,
       `test_auth.py`, `_tok.txt`.
-- [ ] (Recommended) fix issue #1 (`health_score`).
+- [x] Fixed issue #1 (`health_score`) — `platform_admin` now treated as a full run (§0.2).
 - [ ] Existing rows from the old SQLite `metron_runs.db` were NOT migrated (prod started
       fresh) — write a one-off copy script if that history is needed.
 
