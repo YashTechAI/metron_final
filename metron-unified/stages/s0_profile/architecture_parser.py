@@ -86,12 +86,13 @@ Return JSON with exactly these fields (use empty string "" if not visible):
 }}
 """
 
-# ── Vision-capable providers ───────────────────────────────────────────────
-
-_VISION_PROVIDERS = {
-    "Azure OpenAI",
-    "Gemini",
-    "OpenAI",
+# ── Vision-capable model prefixes (litellm routing prefix) ─────────────────
+# Gate on the model prefix, not the friendly provider name: provider names can
+# drift (e.g. "Google Gemini" vs "Gemini") but the litellm prefix is stable.
+_VISION_PREFIXES = {
+    "azure",
+    "gemini",
+    "openai",
 }
 
 
@@ -125,19 +126,21 @@ async def parse_architecture_image(
     image_b64 : base64-encoded image bytes
     mime_type : e.g. "image/png", "image/jpeg", "image/webp"
     """
-    if llm_client.provider_name not in _VISION_PROVIDERS:
+    # Use the per-org / env-resolved model so this works for NIA per-org configs
+    # too (not just the .env LLM_MODEL).
+    model  = llm_client.model or ""
+    prefix = model.split("/", 1)[0] if "/" in model else model
+    if prefix not in _VISION_PREFIXES:
         return {
-            "error": f"Vision not supported for provider '{llm_client.provider_name}'. "
-                     f"Switch to Azure OpenAI, Gemini, or OpenAI for diagram parsing.",
+            "error": f"Vision not supported for the configured model '{model}'. "
+                     f"Use an Azure OpenAI, Gemini, or OpenAI model for diagram parsing.",
             "summary": "",
         }
 
     # Build vision message
     import litellm
-    from core.config import get_model, resolve_api_key
     import os
 
-    model = get_model(llm_client.provider_name, "balanced")
     messages = [
         {
             "role": "user",
@@ -155,10 +158,9 @@ async def parse_architecture_image(
         "model":       model,
         "messages":    messages,
         "temperature": 0.1,
-        "max_tokens":  1500,
+        "max_tokens":  2048,
     }
 
-    prefix = model.split("/")[0] if "/" in model else ""
     if prefix == "azure":
         kwargs["api_key"]     = llm_client.api_key or os.environ.get("AZURE_OPENAI_API_KEY", "")
         raw_ep = os.environ.get("AZURE_OPENAI_ENDPOINT", "")
@@ -169,6 +171,13 @@ async def parse_architecture_image(
         kwargs["api_version"] = os.environ.get("AZURE_API_VERSION", "2025-01-01-preview")
     elif prefix == "gemini":
         kwargs["api_key"] = llm_client.api_key or os.environ.get("GEMINI_API_KEY", "")
+        # Disable Gemini 2.5 "thinking" — otherwise ~1700 reasoning tokens consume
+        # the max_tokens budget and the JSON is truncated (finish_reason="length").
+        # `thinking_budget=0` is ignored by litellm; `reasoning_effort="disable"`
+        # works. (Mirrors LLMClient._call() — the vision path bypasses it.)
+        kwargs["reasoning_effort"] = "disable"
+    elif prefix == "openai":
+        kwargs["api_key"] = llm_client.api_key or os.environ.get("OPENAI_API_KEY", "")
 
     try:
         await llm_client.rate_limiter.wait()
