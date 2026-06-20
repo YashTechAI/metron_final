@@ -154,11 +154,20 @@ async def run_pipeline(
     llm_client = LLMClient(organization_id=getattr(config, "organization_id", ""))
 
     try:
-        # ── Stage 0: App Profile ───────────────────────────────────────────
+        # ── Stage 0: App Profile (+ Technical Attack Surface) ──────────────
+        # Seed-document path: extract a rich AppProfile + 24-category TechnicalProfile
+        # from the stored seed document. Both passes are cached per-project (keyed by the
+        # doc's SHA), so an unchanged seed doc is extracted once and reused across runs.
+        # No document → fall back to the configure-form fields (build_profile_from_config).
         llm_client._current_stage = "s0"
         _update(job_store, run_id, 5, "Analyzing agent profile…", "profiling")
+        tech_profile = None
+        attack_vectors = []
         if doc_text.strip():
-            profile = await parse_document(doc_text, llm_client, project_id)
+            from core.profile_cache import get_or_build_profiles
+            profile, tech_profile = await get_or_build_profiles(
+                doc_text, llm_client, project_id=project_id,
+            )
             # Override app type from config if explicitly set
             if config.application_type.value != "chatbot":
                 profile.application_type = config.application_type
@@ -168,24 +177,9 @@ async def run_pipeline(
                 profile.application_type = ApplicationType.RAG
             if config.agent_domain:
                 profile.domain = config.agent_domain.lower()
-        else:
-            profile = build_profile_from_config(
-                agent_description=config.agent_description,
-                agent_domain=config.agent_domain,
-                application_type_str=config.application_type.value,
-                is_rag=config.is_rag,
-                project_id=project_id,
-            )
 
-        # ── Stage 0b: Technical Profile Extraction ────────────────────────
-        # Second LLM pass: extracts 24-category technical attack surface from
-        # the seed document. Used to generate stack-specific red-team probes.
-        # Runs only when a document is provided; pipeline continues if it fails.
-        tech_profile = None
-        attack_vectors = []
-        if doc_text.strip():
+            # Map the technical attack surface for stack-specific red-team probes.
             _update(job_store, run_id, 7, "Extracting technical attack surface…", "profiling")
-            tech_profile = await extract_technical_profile(doc_text, llm_client)
             attack_vectors = map_attack_surface(tech_profile)
             _log(job_store, run_id, "technical_profile", {
                 "vectors_found": len(attack_vectors),
@@ -194,6 +188,14 @@ async def run_pipeline(
                 "output_destinations": tech_profile.output_destinations[:3],
                 "compliance_frameworks": tech_profile.compliance_frameworks,
             })
+        else:
+            profile = build_profile_from_config(
+                agent_description=config.agent_description,
+                agent_domain=config.agent_domain,
+                application_type_str=config.application_type.value,
+                is_rag=config.is_rag,
+                project_id=project_id,
+            )
 
         # ── Stage 1: Persona Generation (Fishbone) ─────────────────────────
         llm_client._current_stage = "s1"

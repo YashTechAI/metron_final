@@ -55,9 +55,9 @@ async def parse_document(
     project_id: str = "",
 ) -> AppProfile:
     """Extract AppProfile from seed document using LLM."""
-    # Increased from 4000 to 8000 chars so longer specs aren't silently truncated.
-    # Most LLMs support 128K+ context; 8000 chars is still well within safe limits.
-    prompt = EXTRACTION_PROMPT.format(document=document_text[:8000])
+    # Increased to 12000 chars so a full ~3-page seed-document template isn't clipped
+    # (the technical extractor already reads 10000). Most LLMs support 128K+ context.
+    prompt = EXTRACTION_PROMPT.format(document=document_text[:12000])
     try:
         data = await llm_client.complete_json(
             prompt,

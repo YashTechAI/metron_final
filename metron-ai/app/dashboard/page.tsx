@@ -102,20 +102,42 @@ export default function ProjectHub() {
     if (file) setUploadedFile(file);
   };
 
-  const handleConnect = () => {
+  const handleConnect = async () => {
     if (!projectEndpoint || !uploadedFile) return;
     setIsSubmitting(true);
     setSubmitError("");
 
-    const reader = new FileReader();
-    reader.onload = async () => {
+    try {
+      // Get plain text from the seed document. Browsers can't read PDF/DOCX, so those
+      // are extracted server-side; plain-text files are read directly in the browser.
+      const lname = uploadedFile.name.toLowerCase();
+      const isBinary = lname.endsWith(".pdf") || lname.endsWith(".docx");
+      let documentText = "";
+      if (isBinary) {
+        const fd = new FormData();
+        fd.append("file", uploadedFile);
+        const res = await authFetch("/api/extract-document", { method: "POST", body: fd });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({ detail: res.statusText }));
+          throw new Error((err as { detail: string }).detail || "Could not read this file.");
+        }
+        documentText = ((await res.json()).text as string) || "";
+      } else {
+        documentText = await new Promise<string>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(reader.result as string);
+          reader.onerror = () => reject(new Error("Could not read file. Try a .txt, .md, .pdf or .docx file."));
+          reader.readAsText(uploadedFile);
+        });
+      }
+
       const tempId = Date.now().toString();
       const projectData = {
         name: projectName || projectEndpoint,
         endpoint: projectEndpoint,
         apiKey: apiKey,
-        documentText: reader.result as string,
-        documentName: uploadedFile!.name,
+        documentText,
+        documentName: uploadedFile.name,
       };
 
       // Write to sessionStorage for current session sub-pages
@@ -152,7 +174,6 @@ export default function ProjectHub() {
         },
       ]);
 
-      setIsSubmitting(false);
       setShowModal(false);
       setProjectName("");
       setProjectEndpoint("");
@@ -160,14 +181,11 @@ export default function ProjectHub() {
       setUploadedFile(null);
 
       router.push(`/dashboard/project/${tempId}`);
-    };
-
-    reader.onerror = () => {
-      setSubmitError("Could not read file. Try a .txt or .md file.");
+    } catch (e) {
+      setSubmitError(e instanceof Error ? e.message : "Could not read file.");
+    } finally {
       setIsSubmitting(false);
-    };
-
-    reader.readAsText(uploadedFile);
+    }
   };
 
   const closeModal = () => {
@@ -397,7 +415,7 @@ export default function ProjectHub() {
                   ) : (
                     <div className="space-y-1">
                       <h4 className="font-headline font-black text-on-surface">Upload Knowledge Document</h4>
-                      <p className="text-[9px] text-[var(--color-outline)] font-bold uppercase tracking-widest opacity-50">txt · md · json (describes your AI system)</p>
+                      <p className="text-[9px] text-[var(--color-outline)] font-bold uppercase tracking-widest opacity-50">txt · md · json · pdf · docx (describes your AI system)</p>
                     </div>
                   )}
                 </div>

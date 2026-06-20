@@ -37,7 +37,8 @@ export default function ConfigurePage() {
   // Agent
   const [agentName, setAgentName] = useState("");
   const [agentDomain, setAgentDomain] = useState("General");
-  const [agentDescription, setAgentDescription] = useState("");
+  // Seed document — uploaded once at project creation; prompts are generated from it.
+  const [seedDocName, setSeedDocName] = useState("");
 
   // RAG
   const [isRag, setIsRag] = useState(false);
@@ -132,6 +133,14 @@ export default function ConfigurePage() {
       .catch(() => {});
   }, []);
 
+  // Load the project's seed document name (the source for prompt generation)
+  useEffect(() => {
+    authFetch(`${API}/api/projects/${projectId}`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((p) => { if (p?.document_name) setSeedDocName(p.document_name); })
+      .catch(() => {});
+  }, [projectId]);
+
   const testConnection = async () => {
     if (!endpointUrl) return;
     setConnectionStatus("testing");
@@ -160,10 +169,6 @@ export default function ConfigurePage() {
 
 
   const handleGenerate = async () => {
-    if (!agentDescription) {
-      setErrors({ description: "Agent description is required to generate personas" });
-      return;
-    }
     setErrors({});
     setIsGenerating(true);
     setGenerateError("");
@@ -172,7 +177,7 @@ export default function ConfigurePage() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          agent_description: agentDescription,
+          project_id: projectId,
           agent_domain: agentDomain,
           application_type: applicationType,
           num_personas: numPersonas,
@@ -198,7 +203,6 @@ export default function ConfigurePage() {
   const handleNext = async () => {
     const errs: Record<string, string> = {};
     if (!endpointUrl) errs.endpoint = "Endpoint URL is required";
-    if (!agentDescription) errs.description = "Agent description is required";
     if (Object.keys(errs).length > 0) {
       setErrors(errs);
       return;
@@ -239,7 +243,6 @@ export default function ConfigurePage() {
       response_trim_marker: responseTrimMarker || null,
       agent_name: agentName,
       agent_domain: agentDomain,
-      agent_description: agentDescription,
       is_rag: isRag,
       rag_text: isRag ? groundTruthText.slice(0, 800) : "",
       num_personas: numPersonas,
@@ -282,7 +285,7 @@ export default function ConfigurePage() {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            agent_description: agentDescription,
+            project_id: projectId,
             agent_domain: agentDomain,
             application_type: applicationType,
             num_personas: numPersonas,
@@ -464,8 +467,8 @@ export default function ConfigurePage() {
         </div>
       </Section>
 
-      {/* ── Agent Description ─────────────────────────────── */}
-      <Section title="Agent Description" icon="smart_toy">
+      {/* ── Agent Profile ─────────────────────────────── */}
+      <Section title="Agent Profile" icon="smart_toy">
         <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
           <div className="space-y-4">
             <Field label="Agent Name">
@@ -477,21 +480,45 @@ export default function ConfigurePage() {
               </select>
             </Field>
           </div>
-          <Field label="Agent Description" error={errors.description}>
-            <textarea
-              className="input-field resize-none h-[120px]"
-              placeholder="Describe what your agent does, its capabilities, expected behavior, and any constraints…"
-              value={agentDescription}
-              onChange={(e) => setAgentDescription(e.target.value)}
-            />
+          {/* Seed document (read-only) — personas & test prompts are generated from this */}
+          <Field label="Seed Document">
+            <div className="p-4 rounded-xl bg-[var(--color-surface-variant)] space-y-2 h-[120px] flex flex-col justify-center">
+              <div className="flex items-center gap-3">
+                <span className={`material-symbols-outlined text-xl ${seedDocName ? "text-primary" : "text-[#855300]"}`}>
+                  {seedDocName ? "description" : "warning"}
+                </span>
+                <div className="flex-1 min-w-0">
+                  {seedDocName ? (
+                    <>
+                      <p className="text-sm font-semibold text-[var(--color-on-surface)] truncate">{seedDocName}</p>
+                      <p className="text-[10px] text-[var(--color-on-surface-variant)] opacity-60">
+                        Personas and functional / security / quality prompts are generated from this document.
+                      </p>
+                    </>
+                  ) : (
+                    <p className="text-xs text-[var(--color-on-surface-variant)] opacity-70">
+                      No seed document found for this project. Re-create the project and upload one.
+                    </p>
+                  )}
+                </div>
+              </div>
+              <a
+                href="/seed-document-template.md"
+                download
+                className="inline-flex items-center gap-1 text-xs font-semibold text-primary hover:underline"
+              >
+                <span className="material-symbols-outlined text-sm">download</span>
+                Download seed document template
+              </a>
+            </div>
           </Field>
         </div>
 
-        {/* Generate Personas button */}
+        {/* Generate Personas button — driven by the project's seed document */}
         <div className="pt-2 flex items-center gap-4">
           <button
             onClick={handleGenerate}
-            disabled={!agentDescription || isGenerating}
+            disabled={isGenerating}
             className="flex items-center gap-2 px-5 py-2.5 rounded-xl border border-primary text-primary text-sm font-semibold hover:bg-primary/5 transition-colors disabled:opacity-40"
           >
             <span className={`material-symbols-outlined text-base ${isGenerating ? "animate-spin" : ""}`}>

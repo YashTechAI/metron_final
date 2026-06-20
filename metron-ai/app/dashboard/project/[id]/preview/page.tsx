@@ -101,8 +101,8 @@ export default function PreviewPage() {
         response_trim_marker: cfg.response_trim_marker || null,
         agent_name: cfg.agent_name,
         agent_domain: cfg.agent_domain,
-        agent_description: cfg.agent_description,
         is_rag: cfg.is_rag,
+        rag_text: cfg.rag_text || "",
         num_personas: cfg.num_personas,
         num_scenarios: cfg.num_scenarios,
         conversation_turns: cfg.conversation_turns,
@@ -134,12 +134,9 @@ export default function PreviewPage() {
         notify_email: cfg.notify_email ?? false,
       }));
 
-      // Attach RAG knowledge base document if present
-      const ragText = cfg.rag_text as string;
-      if (ragText) {
-        const blob = new Blob([ragText], { type: "text/plain" });
-        formData.append("document", new File([blob], "knowledge.txt"));
-      }
+      // The seed document (system description) is loaded server-side from the project
+      // (projects.document_text) — no re-upload needed. rag_text now rides in the config
+      // JSON above for RAG grounding; the ground-truth file (below) drives RAG metrics.
 
       // Attach ground truth file if present (RAG mode)
       const gtText = sessionStorage.getItem(`ground_truth_${projectId}`);

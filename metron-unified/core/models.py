@@ -575,7 +575,10 @@ class PersonaFeedback(BaseModel):
 # ── API Request/Response models ────────────────────────────────────────────
 
 class PreviewRequest(BaseModel):
-    agent_description:    str
+    # project_id selects the stored seed document (projects.document_text) as the prompt
+    # source. agent_description is an optional fallback when no project/seed doc exists.
+    project_id:           str = ""
+    agent_description:    str = ""
     agent_domain:         str = "general"
     application_type:     str = "chatbot"
     num_personas:         int = 3

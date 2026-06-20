@@ -245,25 +245,67 @@ async def parse_architecture_endpoint(
 
 
 # ──────────────────────────────────────────────────────────────────────────
+# POST /api/extract-document — extract text from an uploaded seed doc (PDF/DOCX/text)
+# ──────────────────────────────────────────────────────────────────────────
+@app.post("/api/extract-document")
+async def extract_document(request: Request, file: UploadFile = File(...)):
+    """Extract plain text from an uploaded seed/knowledge document.
+
+    Browsers can only read plain text via FileReader; PDF/DOCX are extracted here
+    (pypdf / python-docx) so the existing projects.document_text storage and LLM
+    profile extraction keep working unchanged.
+    """
+    get_current_user(request)
+    data = await file.read()
+    from core.file_text import extract_file_text
+    text = extract_file_text(file.filename or "", data)
+    if not text.strip():
+        raise HTTPException(
+            400,
+            "Could not extract any text from this file. For PDFs, make sure it is a "
+            "text-based PDF (not a scanned image).",
+        )
+    return {"text": text, "name": file.filename or "document"}
+
+
+# ──────────────────────────────────────────────────────────────────────────
 # POST /api/preview — generate personas + scenarios
 # ──────────────────────────────────────────────────────────────────────────
 @app.post("/api/preview")
 async def preview(req: PreviewRequest, request: Request):
     user = get_current_user(request)
-    if not req.agent_description.strip():
-        raise HTTPException(400, "agent_description is required")
     if not _has_credentials():
         raise HTTPException(400, "No LLM configured: set up this org in the NIA DB, or set LLM_MODEL / LLM_API_KEY")
 
     # Per-org LLM config (org id from JWT); falls back to .env when no org / NIA DB.
     llm_client = LLMClient(organization_id=user.get("organization_id", ""))
 
-    from stages.s0_profile.document_parser import build_profile_from_config
-    profile = build_profile_from_config(
-        agent_description=req.agent_description,
-        agent_domain=req.agent_domain,
-        application_type_str=req.application_type,
-    )
+    # Profile source priority:
+    #   1. The project's stored seed document (projects.document_text) — primary path,
+    #      extracted (and cached) into a rich AppProfile, same as the run pipeline.
+    #   2. agent_description fallback — legacy / projects without a seed document.
+    profile = None
+    if req.project_id:
+        proj = _db.get_project(req.project_id)
+        seed_text = (proj or {}).get("document_text") or ""
+        if seed_text.strip():
+            from core.profile_cache import get_or_build_profiles
+            profile, _tech = await get_or_build_profiles(
+                seed_text, llm_client, project_id=req.project_id, project=proj,
+            )
+            # Domain dropdown stays an optional override (mirrors the run pipeline).
+            if req.agent_domain:
+                profile.domain = req.agent_domain.lower()
+
+    if profile is None:
+        if not req.agent_description.strip():
+            raise HTTPException(400, "Provide a project_id with a seed document, or an agent_description")
+        from stages.s0_profile.document_parser import build_profile_from_config
+        profile = build_profile_from_config(
+            agent_description=req.agent_description,
+            agent_domain=req.agent_domain,
+            application_type_str=req.application_type,
+        )
 
     # Fishbone slots → personas
     slots    = build_slots(profile, num_personas=req.num_personas)
@@ -418,14 +460,29 @@ async def run_tests(
     if not _has_credentials(run_config):
         raise HTTPException(400, "No LLM configured: set up this org in the NIA DB, or set LLM_MODEL / LLM_API_KEY")
 
-    # Read uploaded document
+    # Read uploaded document (legacy/override path — a one-off doc just for this run).
+    # Uses the shared extractor so an uploaded PDF/DOCX override also works here.
     doc_text = ""
     if document:
         try:
             content = await document.read()
-            doc_text = content.decode("utf-8", errors="ignore")
+            from core.file_text import extract_file_text
+            doc_text = extract_file_text(document.filename or "", content)
         except Exception:
             doc_text = ""
+
+    # Seed-document path (default): when no doc is uploaded for this run, use the
+    # project's stored seed document so prompts are generated from it without re-upload.
+    # The pipeline's stage 0 already extracts a rich profile + technical attack surface
+    # from doc_text; here we just make sure doc_text is the stored seed document.
+    if not doc_text.strip() and run_config.project_id:
+        try:
+            _proj = _db.get_project(run_config.project_id)
+            if _proj and _proj.get("document_text"):
+                doc_text = _proj["document_text"]
+        except Exception as _seed_err:
+            print(f"[API] Could not load stored seed document for project "
+                  f"{run_config.project_id}: {_seed_err}")
 
     # Authorization removed — no quota gating. Every authenticated user may run.
     run_id = str(uuid.uuid4())

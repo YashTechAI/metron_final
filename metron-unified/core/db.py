@@ -97,17 +97,25 @@ def init_db() -> None:
 
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS projects (
-                    project_id    TEXT PRIMARY KEY,
-                    user_email    TEXT NOT NULL,
-                    name          TEXT,
-                    endpoint      TEXT,
-                    api_key       TEXT,
-                    document_text TEXT,
-                    document_name TEXT,
-                    created_at    TEXT NOT NULL
+                    project_id        TEXT PRIMARY KEY,
+                    user_email        TEXT NOT NULL,
+                    name              TEXT,
+                    endpoint          TEXT,
+                    api_key           TEXT,
+                    document_text     TEXT,
+                    document_name     TEXT,
+                    created_at        TEXT NOT NULL,
+                    profile_json      TEXT,
+                    tech_profile_json TEXT,
+                    document_sha      TEXT
                 )
             """)
             cur.execute("CREATE INDEX IF NOT EXISTS idx_projects_user ON projects(user_email)")
+            # Additive migration for pre-existing DBs (idempotent — safe to re-run).
+            # Caches the LLM-extracted seed-doc profile so runs don't re-extract every time.
+            cur.execute("ALTER TABLE projects ADD COLUMN IF NOT EXISTS profile_json TEXT")
+            cur.execute("ALTER TABLE projects ADD COLUMN IF NOT EXISTS tech_profile_json TEXT")
+            cur.execute("ALTER TABLE projects ADD COLUMN IF NOT EXISTS document_sha TEXT")
         conn.commit()
     finally:
         _put(conn)
@@ -355,6 +363,34 @@ def save_project(
                 (project_id, user_email, name, endpoint, api_key,
                  _strip_nul(document_text), _strip_nul(document_name),
                  datetime.utcnow().isoformat()),
+            )
+        conn.commit()
+    finally:
+        _put(conn)
+
+
+def save_project_profile(
+    project_id: str,
+    profile_json: str,
+    tech_profile_json: str,
+    document_sha: str,
+) -> None:
+    """Cache the LLM-extracted AppProfile + TechnicalProfile for a project's seed doc.
+
+    Keyed by document_sha so the profile is reused across runs and re-extracted only when
+    the seed document changes. Values are Pydantic model_dump_json() strings.
+    """
+    conn = _connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE projects
+                SET profile_json = %s, tech_profile_json = %s, document_sha = %s
+                WHERE project_id = %s
+                """,
+                (_strip_nul(profile_json), _strip_nul(tech_profile_json),
+                 document_sha, project_id),
             )
         conn.commit()
     finally:

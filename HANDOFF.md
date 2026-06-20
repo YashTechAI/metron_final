@@ -83,6 +83,53 @@ in the results JSON — only the role gate hid it. `platform_admin` runs all 5 p
 always carried it). The run-history **list** shows it only for **new** runs — rows saved
 before this fix have `health_score=None` in the DB column and won't backfill unless re-run.
 
+### 0.3 Prompts now generate from the stored seed document (not the Agent Description)
+
+**Goal:** generate all test prompts (functional / security / quality) from the **seed
+document** uploaded once at project creation and reused across runs — instead of the
+free-text **Agent Description** field, which produced weak prompts (`build_profile_from_config()`
+left `domain_vocabulary` / `boundaries` / `success_criteria` empty and skipped the technical
+extraction entirely).
+
+**Key insight:** the pipeline already does the right thing when stage 0 gets a non-empty
+`doc_text` — `parse_document()` (rich `AppProfile`) + `extract_technical_profile()` (24-cat
+attack surface) → personas → functional/security/quality. The seed doc was **already stored**
+in `projects.document_text`; it was just never loaded at preview/run time, and the UI drove
+everything off `agent_description`. So this was wiring + UI removal + a uniform template, not
+a pipeline rewrite.
+
+**What changed:**
+- **NEW `core/profile_cache.py`** — `get_or_build_profiles(doc_text, llm_client, project_id)`:
+  SHA-keyed per-project cache of the extracted `AppProfile` + `TechnicalProfile`; re-extracts
+  only when the seed doc changes. Used by both `/api/preview` and pipeline stage 0.
+- **`core/db.py`** — additive idempotent migration adds `profile_json`, `tech_profile_json`,
+  `document_sha` to `projects`; new `save_project_profile()`.
+- **`fastapi_server.py`** — `/api/preview` builds the profile from the project's seed doc via
+  the cache (falls back to `agent_description` only when no doc); `/api/run` loads
+  `projects.document_text` as `doc_text` when no document is uploaded.
+- **`pipeline.py`** stage 0 — uses `get_or_build_profiles` (cache hit skips both LLM passes).
+- **`core/models.py`** — `PreviewRequest` gains `project_id`; `agent_description` optional.
+  **`document_parser.py`** truncation 8000 → 12000.
+- **Frontend** — `configure/page.tsx`: Agent Description box removed → read-only **Seed
+  Document** card + template download; "Generate Personas" calls `/api/preview` with
+  `project_id`; **Name + Domain kept**. `preview/page.tsx`: `rag_text` moved into the config
+  JSON (RAG grounding via `config.rag_text`), no longer uploaded as `document`;
+  `agent_description` dropped. → channel separation: **seed doc = profile**, **rag_text =
+  grounding**, **ground_truth_file = RAG metrics**.
+- **Seed document template (3 pages)** — `metron-unified/templates/seed_document_template.md`
+  (canonical) + `metron-ai/public/seed-document-template.md` (downloadable); headings map 1:1
+  onto the `parse_document` + `extract_technical_profile` fields.
+
+**Verified (live Supabase + Gemini):** seed doc → rich profile (`domain_vocabulary` +
+`boundaries` populated; tech profile `auth_type`/`authorized_actions`); cached to Postgres
+(all 3 columns set); **2nd call = cache hit (0 LLM calls)**; functional prompts real &
+domain-grounded (not the `"Hi, I need help with…"` fallback). `py_compile` clean;
+`tsc --noEmit` exit 0.
+
+**Backward-compatible:** `agent_description` fields + `build_profile_from_config` fallback
+retained; migration is `ADD COLUMN IF NOT EXISTS`; the uploaded-`document` override on
+`/api/run` still works.
+
 ---
 
 ## 1. What Metron is
@@ -161,6 +208,8 @@ and `make_deepeval_model(config)`. litellm routes by the model prefix
 ### 3.3 App database (`core/db.py`)
 - **PostgreSQL** via `psycopg2` + `ThreadedConnectionPool` (maxconn=5), `RealDictCursor`,
   `sslmode=require` (Supabase). Two tables: `runs`, `projects` (NO `tenant_id`).
+  `projects` also caches the seed-doc-extracted profile (`profile_json`, `tech_profile_json`,
+  `document_sha`) — see §0.3.
 - `_strip_nul()` removes NUL (`0x00`) bytes before insert (Postgres rejects them;
   uploaded PDFs read as text can contain them).
 - This is **separate** from the NIA DB (different Supabase project).
@@ -173,6 +222,8 @@ and `make_deepeval_model(config)`. litellm routes by the model prefix
 |------|---------|
 | `metron-unified/core/nia_connection.py` | SQLAlchemy engine to the NIA DB from `NIA_DB_*` / `NIA_DATABASE_URL`. `is_configured()`, `nia_engine()`. SSL via `NIA_DB_SSLMODE` (default psycopg2 `prefer`). |
 | `metron-unified/core/dynamic_config.py` | `fetch_llm_config_and_pricing(org_id, app_name)` — NIA SQL query (no pricing) + KMS decrypt + 60s `TTLCache`. Ported from the platform's reference. |
+| `metron-unified/core/profile_cache.py` | `get_or_build_profiles()` — SHA-keyed per-project cache of the seed-doc-extracted `AppProfile` + `TechnicalProfile` (§0.3). |
+| `metron-unified/templates/seed_document_template.md` | 3-page seed-document template (downloadable copy at `metron-ai/public/seed-document-template.md`) (§0.3). |
 | `metron-unified/.env` | Real config (gitignored — NOT committed). |
 | `HANDOFF.md` | This file. |
 
