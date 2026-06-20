@@ -328,7 +328,9 @@ function FeedbackCard({ content }: { content: Record<string, unknown> }) {
   );
 }
 
-const _FULL_RUN_ROLES = new Set(["all"]);
+// "platform_admin" = auth's universal full-access role (runs all phases) → full run.
+// Keep in sync with the backend _full_run_roles set in pipeline.py.
+const _FULL_RUN_ROLES = new Set(["all", "platform_admin"]);
 
 function PipelineCompleteCard({ content }: { content: Record<string, unknown> }) {
   const score = content.health_score as number;
