@@ -38,7 +38,9 @@ def report_to_json(report: AggregatedReport) -> Dict[str, Any]:
     return data
 
 
-_FULL_RUN_ROLES = {"all"}
+# "platform_admin" is auth's universal full-access role (runs all phases), so it is
+# treated as a full run and gets the headline health score — same as "all".
+_FULL_RUN_ROLES = {"all", "platform_admin"}
 
 
 _RQ_ONLY_ROLES = {"performance", "load", "performance+load"}

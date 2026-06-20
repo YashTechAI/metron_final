@@ -773,7 +773,10 @@ async def run_pipeline(
         if report.rca:
             final_json["rca"] = report.rca.model_dump()
 
-        _full_run_roles = {"all"}
+        # "all" = every phase selected; "platform_admin" = the universal full-access
+        # role auth assigns to any valid token (core/auth.py _FULL_ACCESS_ROLE) — it
+        # runs all phases (see _allowed_phases fallback), so it gets the health score.
+        _full_run_roles = {"all", "platform_admin"}
         _is_full_run = user_role in _full_run_roles
 
         # ── Token tracking: write to MLflow, read back, store in memory ─────────

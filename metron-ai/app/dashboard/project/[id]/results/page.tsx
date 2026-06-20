@@ -506,7 +506,7 @@ function ResultsContent() {
     const r = results;
 
 
-    const isFullRunMd = ["all"].includes(r.user_role ?? "all");
+    const isFullRunMd = ["all", "platform_admin"].includes(r.user_role ?? "all");
     const _mdRole = (r.user_role ?? "");
     const _mdRqOnly = !_mdRole.includes("functional") && !_mdRole.includes("security") && !_mdRole.includes("quality") && _mdRole !== "all";
     const scoreLineMd = isFullRunMd
@@ -573,7 +573,10 @@ ${loadSection}`;
 
   const healthPct = Math.round(results.health_score * 100);
   const healthColor = healthPct >= 70 ? "text-secondary" : healthPct >= 40 ? "text-[#855300]" : "text-error";
-  const isFullRun = ["all"].includes(results.user_role ?? "all");
+  // "platform_admin" is auth's universal full-access role (all phases run), so it
+  // shows the headline health score — same as "all". Keep in sync with the backend
+  // _full_run_roles set in pipeline.py.
+  const isFullRun = ["all", "platform_admin"].includes(results.user_role ?? "all");
 
   const _KNOWN_PHASES = new Set(["functional", "security", "quality", "performance", "load"]);
   const _ROLE_PHASES: Record<string, Set<string>> = {
