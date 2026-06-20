@@ -9,6 +9,53 @@
 
 ---
 
+## 0. Latest session (2026-06-20) — Gemini "thinking" truncation fix ✅
+
+**Symptom:** Functional test prompts came out as the generic fallback
+`"Hi, I need help with <goal>."` (e.g. *"Hi, I need help with email writer agent."*)
+instead of rich, persona-specific prompts.
+
+**Root cause (confirmed by live calls against the NIA-resolved Gemini, not theory):**
+`thinking_budget=0` is **silently ignored by litellm for `gemini/gemini-2.5-flash`**.
+The model kept "thinking" (~1,700 reasoning tokens), overran `max_tokens`, and
+**truncated the JSON** (`finish_reason="length"`). The truncated JSON failed to parse,
+so `LLMClient.complete_json()` exhausted its retries and raised. That exception:
+- in **persona gen** → `build_persona` catches it → `_fallback_persona` →
+  `entry_points=["Hi, I need help with {goal}."]` (no `multi_turn_scenario`);
+- in **functional gen** → Priority 1 skipped (fallback persona has no scenario),
+  Priority 2's LLM call truncates the same way → Priority 3 emits the canned entry_point.
+
+The `"Hi"` (vs `_assemble_persona`'s `"Hello"`) is the exact fingerprint of `_fallback_persona`.
+
+**Evidence (same persona-sized prompt, `max_tokens=2000`):**
+
+| Param sent | `finish_reason` | reasoning tokens | JSON parses? |
+|---|---|---|---|
+| `thinking_budget=0` (old code) | `length` | 1,708 | ❌ truncated |
+| `thinking={"type":"disabled"}` | `length` | 1,698 | ❌ |
+| no param | `length` | 1,699 | ❌ |
+| **`reasoning_effort="disable"`** | `stop` | **None** | ✅ full output |
+
+**Why GEval still scored before the fix:** the judge's output is tiny (a score + short
+reason), so it fit in the ~300 tokens left after the thinking tax. Only the **large**
+structured outputs (personas, functional prompt sets) overflowed and truncated.
+
+**Fix:** swap `thinking_budget=0` → `reasoning_effort="disable"` for Gemini in both spots:
+- `core/llm_client.py` `_call()` (~L349) — all pipeline generation (personas, functional, security…).
+- `core/deepeval_azure.py` `make_deepeval_model()` (~L238) — the GEval/DeepEval judge (now
+  robust against long-rationale truncation; also saves ~1,700 wasted reasoning tokens/call).
+
+**Verified end-to-end** through the real `build_persona` + `generate_functional_prompts`
+and `make_deepeval_model().generate()` paths against live Gemini:
+- persona is no longer a fallback (`multi_turn_scenario` = 3 turns; rich, domain-specific prompts);
+- functional prompts are real LLM output (even carry the designed HTML-paste artifacts);
+- judge returns complete `{"score", "reason"}` JSON (`finish_reason="stop"`).
+
+> Note: this fixes the **truncation** (the cause of the fallback). Prompt *quality* beyond
+> "real vs. canned" is unchanged.
+
+---
+
 ## 1. What Metron is
 
 Two apps in one repo (`metron_final/`):

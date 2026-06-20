@@ -339,10 +339,14 @@ class LLMClient:
                 kwargs["aws_secret_access_key"] = aws_secret
             kwargs["aws_region_name"] = aws_region
 
-        # Disable Gemini "thinking" so it doesn't consume the output token budget
-        # (mirrors the platform's enforce_zero_thinking_budget for Gemini/Google).
+        # Disable Gemini "thinking" so it doesn't consume the output token budget.
+        # NOTE: `thinking_budget=0` is silently IGNORED by litellm for Gemini 2.5 —
+        # the model keeps thinking (~1700 reasoning tokens), overruns max_tokens, and
+        # truncates the JSON (finish_reason="length") → parse fails → personas/tests
+        # fall back to canned prompts. `reasoning_effort="disable"` actually turns it
+        # off (verified: finish_reason="stop", reasoning_tokens=None).
         if prefix == "gemini" or "google" in self.provider_name.lower():
-            kwargs.setdefault("thinking_budget", 0)
+            kwargs.setdefault("reasoning_effort", "disable")
 
         # Merge provider config from the org's NIA record (api_base, api_version,
         # aws creds, etc.) without overriding anything set explicitly above.

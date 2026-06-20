@@ -195,7 +195,7 @@ def make_deepeval_model(config=None):
     Provider is implied by the model prefix:
       azure/      → native AzureOpenAI client (AZURE_OPENAI_ENDPOINT/_API_KEY)
       bedrock/    → LiteLLM wrapper + AWS creds (from org config or env)
-      gemini/…    → LiteLLM wrapper with the resolved api_key (+ thinking_budget 0)
+      gemini/…    → LiteLLM wrapper with the resolved api_key (+ reasoning_effort disable)
       nvidia_nim/ → LiteLLM wrapper with api_key + NVIDIA api_base
 
     Returns None when deepeval is unavailable or credentials are missing.
@@ -234,7 +234,9 @@ def make_deepeval_model(config=None):
     if prefix == "nvidia_nim":
         kwargs["api_base"] = "https://integrate.api.nvidia.com/v1"
     if prefix == "gemini":
-        kwargs.setdefault("thinking_budget", 0)
+        # `thinking_budget=0` is ignored by litellm for Gemini 2.5 (thinking stays on
+        # and eats the token budget); `reasoning_effort="disable"` actually turns it off.
+        kwargs.setdefault("reasoning_effort", "disable")
     # Merge extra provider config from the org record (api_base, api_version, …).
     for k, v in extra.items():
         kwargs.setdefault(k, v)
