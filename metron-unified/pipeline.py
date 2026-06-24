@@ -134,13 +134,18 @@ async def run_pipeline(
     if _pipeline_sem is None:
         _pipeline_sem = asyncio.Semaphore(10)
 
+    # Owner stored on the run packs the org id so org-mates can view it; the plain
+    # `user_email` is kept separately for notifications (an org-packed value is not
+    # a valid email address).
+    run_owner = _db.make_owner(user_email, getattr(config, "organization_id", ""))
+
     # Record ownership immediately — before we acquire the semaphore
     if run_id in job_store:
-        job_store[run_id]["user_email"] = user_email
+        job_store[run_id]["user_email"] = run_owner
 
     # Write a 'running' placeholder to DB so a server crash is recoverable
     try:
-        _db.touch_run(run_id, project_id, user_email, config.agent_domain, config.application_type.value)
+        _db.touch_run(run_id, project_id, run_owner, config.agent_domain, config.application_type.value)
     except Exception as _touch_err:
         print(f"[Pipeline] touch_run failed (non-fatal): {_touch_err}")
 
@@ -841,7 +846,7 @@ async def run_pipeline(
                 domain=config.agent_domain,
                 application_type=config.application_type.value,
                 results=final_json,
-                user_email=user_email,
+                user_email=run_owner,
                 total_passed=report.total_passed,
                 total_tests=report.total_tests,
             )

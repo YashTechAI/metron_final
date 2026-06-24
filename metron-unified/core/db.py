@@ -21,6 +21,33 @@ import psycopg2
 from psycopg2.extras import RealDictCursor
 from psycopg2.pool import ThreadedConnectionPool
 
+# ── Org-scoped ownership encoding ───────────────────────────────────────────────
+# Quick approach (no schema change): we pack the organization_id into the existing
+# `user_email` column as "<email>::org::<organization_id>". Listing/visibility then
+# filters on the org portion so everyone in the same org sees the same projects.
+# Rows without an org are stored as plain "<email>" (no separator), preserving the
+# original per-user behavior for users that carry no organization_id.
+ORG_SEP = "::org::"
+
+
+def make_owner(email: str, organization_id: str = "") -> str:
+    """Encode the owner column value from an email + optional organization_id."""
+    org = (organization_id or "").strip()
+    return f"{email}{ORG_SEP}{org}" if org else (email or "")
+
+
+def owner_org(owner: str) -> str:
+    """Extract the organization_id from a packed owner value ('' if none)."""
+    owner = owner or ""
+    return owner.split(ORG_SEP, 1)[1] if ORG_SEP in owner else ""
+
+
+def owner_email(owner: str) -> str:
+    """Extract the email from a packed owner value."""
+    owner = owner or ""
+    return owner.split(ORG_SEP, 1)[0] if ORG_SEP in owner else owner
+
+
 # ── Connection pool ────────────────────────────────────────────────────────────
 # Lazily created on first use. Small max — managed Postgres poolers (e.g. Supabase)
 # cap the number of concurrent connections.
@@ -414,6 +441,35 @@ def get_projects_for_user(user_email: str) -> List[Dict[str, Any]]:
         return [dict(r) for r in rows]
     finally:
         _put(conn)
+
+
+def get_projects_for_org(organization_id: str) -> List[Dict[str, Any]]:
+    """All projects owned by anyone in the given org (matches the packed owner suffix)."""
+    org = (organization_id or "").strip()
+    if not org:
+        return []
+    conn = _connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT project_id, name, endpoint, document_name, created_at, user_email
+                FROM projects
+                WHERE user_email LIKE %s
+                ORDER BY created_at DESC
+                """,
+                # Escape LIKE metacharacters in the org id, then match the exact suffix.
+                (f"%{ORG_SEP}{_like_escape(org)}",),
+            )
+            rows = cur.fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        _put(conn)
+
+
+def _like_escape(value: str) -> str:
+    """Escape % and _ so they are matched literally in a LIKE pattern."""
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
 def get_project(project_id: str) -> Optional[Dict[str, Any]]:

@@ -107,10 +107,23 @@ async def _startup():
         print(f"[DB] Startup recovery failed (non-fatal): {e}")
 
 
-def _check_job_ownership(job: Dict, user_email: str) -> None:
-    """Raise 403 if the job has an owner and it doesn't match the requesting user."""
-    owner = job.get("user_email", "")
-    if owner and owner != user_email:
+def _can_access_owner(owner: str, user: Dict) -> bool:
+    """Org members share access to a run; users without an org fall back to email.
+
+    `owner` is the packed value stored on a run/job ("<email>::org::<org>" or just
+    "<email>" for legacy/org-less runs). Empty owner = unowned, allow.
+    """
+    if not owner:
+        return True
+    org = user.get("organization_id", "")
+    if org:
+        return _db.owner_org(owner) == org
+    return _db.owner_email(owner) == user["email"]
+
+
+def _check_job_ownership(job: Dict, user: Dict) -> None:
+    """Raise 403 if the job has an owner the requesting user can't access."""
+    if not _can_access_owner(job.get("user_email", ""), user):
         raise HTTPException(status_code=403, detail="Access denied: this run belongs to another user")
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -491,6 +504,8 @@ async def run_tests(
     project_id = run_config.project_id or run_id
 
     from datetime import datetime as _dt
+    # Pack the org id into the owner so org-mates can view this run's status/results.
+    run_owner = _db.make_owner(user["email"], user.get("organization_id", ""))
     # Job store contains NO API keys — only status/progress/config summary
     jobs[run_id] = {
         "status":        "queued",
@@ -503,7 +518,7 @@ async def run_tests(
         "error":         None,
         "results":       None,
         "project_id":    project_id,
-        "user_email":    user["email"],
+        "user_email":    run_owner,
         "timestamp":     _dt.utcnow().isoformat(),
         # Safe config summary (no credentials)
         "config_summary": {
@@ -538,8 +553,7 @@ async def get_job_status(run_id: str, request: Request):
         # Fall back to DB for runs that completed before last restart
         db_row = _db.get_run(run_id)
         if db_row:
-            owner = db_row.get("user_email", "")
-            if owner and owner != user["email"]:
+            if not _can_access_owner(db_row.get("user_email", ""), user):
                 raise HTTPException(403, "Access denied: this run belongs to another user")
             return {
                 "run_id":        run_id,
@@ -553,7 +567,7 @@ async def get_job_status(run_id: str, request: Request):
                 "error":         None,
             }
         raise HTTPException(404, "Job not found")
-    _check_job_ownership(job, user["email"])
+    _check_job_ownership(job, user)
     return {
         "run_id":        run_id,
         "status":        job["status"],
@@ -578,13 +592,12 @@ async def get_job_results(run_id: str, request: Request):
         # Fall back to DB
         db_row = _db.get_run(run_id)
         if db_row:
-            owner = db_row.get("user_email", "")
-            if owner and owner != user["email"]:
+            if not _can_access_owner(db_row.get("user_email", ""), user):
                 raise HTTPException(403, "Access denied: this run belongs to another user")
             if db_row.get("results"):
                 return db_row["results"]
         raise HTTPException(404, "Job not found")
-    _check_job_ownership(job, user["email"])
+    _check_job_ownership(job, user)
     if job["status"] in ("running", "queued"):
         raise HTTPException(202, "Job still running")
     if job["status"] == "failed":
@@ -602,7 +615,7 @@ async def get_token_summary(run_id: str, request: Request):
 
     # Try in-memory first, then fall back to DB (survives server restarts)
     if job:
-        _check_job_ownership(job, user["email"])
+        _check_job_ownership(job, user)
         summary = job.get("token_summary")
     else:
         summary = _db.get_token_summary(run_id)
@@ -641,7 +654,7 @@ async def get_project_runs(project_id: str, request: Request):
     project = _db.get_project(project_id)
     if not project:
         raise HTTPException(404, "Project not found")
-    if project.get("user_email") != user["email"]:
+    if not _can_access_project(project, user):
         raise HTTPException(403, "Not your project")
     try:
         db_runs = _db.get_runs_for_project(project_id)
@@ -652,8 +665,8 @@ async def get_project_runs(project_id: str, request: Request):
         for rid, job in jobs.items():
             if job.get("project_id") != project_id or rid in db_run_ids:
                 continue
-            # Skip runs that belong to a different user
-            if job.get("user_email") and job["user_email"] != user["email"]:
+            # Skip runs the requesting user can't access (org-aware)
+            if not _can_access_owner(job.get("user_email", ""), user):
                 continue
             results = job.get("results") or {}
             mem_runs.append({
@@ -688,6 +701,15 @@ async def auth_me(request: Request):
 
 # ── Project persistence endpoints ───────────────────────────────────────────
 
+def _can_access_project(project: dict, user: dict) -> bool:
+    """Org members share access; users without an org fall back to email ownership."""
+    owner = project.get("user_email", "")
+    org = user.get("organization_id", "")
+    if org:
+        return _db.owner_org(owner) == org
+    return _db.owner_email(owner) == user["email"]
+
+
 class _ProjectBody(BaseModel):
     project_id: str
     name: str
@@ -700,8 +722,10 @@ class _ProjectBody(BaseModel):
 @app.post("/api/projects")
 async def create_project(body: _ProjectBody, request: Request):
     user = get_current_user(request)
+    # Pack the org id into the owner column so org-mates can see this project.
+    owner = _db.make_owner(user["email"], user.get("organization_id", ""))
     _db.save_project(
-        body.project_id, user["email"], body.name, body.endpoint,
+        body.project_id, owner, body.name, body.endpoint,
         body.api_key, body.document_text, body.document_name,
     )
     return {"ok": True}
@@ -710,7 +734,13 @@ async def create_project(body: _ProjectBody, request: Request):
 @app.get("/api/projects")
 async def list_projects(request: Request):
     user = get_current_user(request)
-    projects = _db.get_projects_for_user(user["email"])
+    org = user.get("organization_id", "")
+    # Org users see every project in their org; users without an org keep the
+    # original per-email view.
+    if org:
+        projects = _db.get_projects_for_org(org)
+    else:
+        projects = _db.get_projects_for_user(user["email"])
     return {"projects": projects}
 
 
@@ -729,7 +759,7 @@ async def delete_project(project_id: str, request: Request):
     project = _db.get_project(project_id)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
-    if project.get("user_email") != user["email"]:
+    if not _can_access_project(project, user):
         raise HTTPException(status_code=403, detail="Not your project")
     _db.delete_project(project_id)
     return {"ok": True}
