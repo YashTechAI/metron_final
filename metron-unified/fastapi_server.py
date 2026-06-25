@@ -97,6 +97,7 @@ async def _startup():
                 "error":         row.get("results", {}).get("error") if is_failed else None,
                 "results":       None if is_failed else row.get("results"),
                 "user_email":    row.get("user_email", ""),
+                "organization_id": row.get("organization_id", ""),
                 "project_id":    row.get("project_id", ""),
                 "eval_warnings": [],
                 "token_summary": row.get("token_summary"),
@@ -107,11 +108,24 @@ async def _startup():
         print(f"[DB] Startup recovery failed (non-fatal): {e}")
 
 
-def _check_job_ownership(job: Dict, user_email: str) -> None:
-    """Raise 403 if the job has an owner and it doesn't match the requesting user."""
-    owner = job.get("user_email", "")
-    if owner and owner != user_email:
-        raise HTTPException(status_code=403, detail="Access denied: this run belongs to another user")
+def _can_access(row_org: str, row_email: str, user: Dict) -> bool:
+    """Org-scoped access rule for projects and runs.
+
+    When both the resource and the caller carry an organization_id, access is granted to
+    anyone in the same organization. Otherwise (legacy rows with no org, or no-org tokens
+    / local-dev bypass) fall back to creator-email matching so org-less resources are never
+    shared beyond their owner.
+    """
+    user_org = user.get("organization_id", "")
+    if user_org and row_org:
+        return row_org == user_org
+    return bool(row_email) and row_email == user.get("email", "")
+
+
+def _check_job_ownership(job: Dict, user: Dict) -> None:
+    """Raise 403 if the requesting user is not in the run's organization (or its creator)."""
+    if not _can_access(job.get("organization_id", ""), job.get("user_email", ""), user):
+        raise HTTPException(status_code=403, detail="Access denied: this run belongs to another organization")
 
 # ──────────────────────────────────────────────────────────────────────────
 # GET /api/providers — the single env-configured LLM (model + whether key is set)
@@ -504,6 +518,7 @@ async def run_tests(
         "results":       None,
         "project_id":    project_id,
         "user_email":    user["email"],
+        "organization_id": run_config.organization_id,
         "timestamp":     _dt.utcnow().isoformat(),
         # Safe config summary (no credentials)
         "config_summary": {
@@ -538,9 +553,8 @@ async def get_job_status(run_id: str, request: Request):
         # Fall back to DB for runs that completed before last restart
         db_row = _db.get_run(run_id)
         if db_row:
-            owner = db_row.get("user_email", "")
-            if owner and owner != user["email"]:
-                raise HTTPException(403, "Access denied: this run belongs to another user")
+            if not _can_access(db_row.get("organization_id", ""), db_row.get("user_email", ""), user):
+                raise HTTPException(403, "Access denied: this run belongs to another organization")
             return {
                 "run_id":        run_id,
                 "status":        db_row.get("status", "completed"),
@@ -553,7 +567,7 @@ async def get_job_status(run_id: str, request: Request):
                 "error":         None,
             }
         raise HTTPException(404, "Job not found")
-    _check_job_ownership(job, user["email"])
+    _check_job_ownership(job, user)
     return {
         "run_id":        run_id,
         "status":        job["status"],
@@ -578,13 +592,12 @@ async def get_job_results(run_id: str, request: Request):
         # Fall back to DB
         db_row = _db.get_run(run_id)
         if db_row:
-            owner = db_row.get("user_email", "")
-            if owner and owner != user["email"]:
-                raise HTTPException(403, "Access denied: this run belongs to another user")
+            if not _can_access(db_row.get("organization_id", ""), db_row.get("user_email", ""), user):
+                raise HTTPException(403, "Access denied: this run belongs to another organization")
             if db_row.get("results"):
                 return db_row["results"]
         raise HTTPException(404, "Job not found")
-    _check_job_ownership(job, user["email"])
+    _check_job_ownership(job, user)
     if job["status"] in ("running", "queued"):
         raise HTTPException(202, "Job still running")
     if job["status"] == "failed":
@@ -602,15 +615,41 @@ async def get_token_summary(run_id: str, request: Request):
 
     # Try in-memory first, then fall back to DB (survives server restarts)
     if job:
-        _check_job_ownership(job, user["email"])
+        _check_job_ownership(job, user)
         summary = job.get("token_summary")
     else:
+        # Gate the DB fallback the same way the status/results endpoints do.
+        db_row = _db.get_run(run_id)
+        if db_row and not _can_access(db_row.get("organization_id", ""), db_row.get("user_email", ""), user):
+            raise HTTPException(403, "Access denied: this run belongs to another organization")
         summary = _db.get_token_summary(run_id)
 
     if summary and summary.get("total_tokens", 0) > 0:
         return summary
 
     return {"total_calls": 0, "total_tokens": 0, "estimated_cost_usd": 0.0}
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# DELETE /api/job/{run_id} — delete a single run from history (org-wide)
+# ──────────────────────────────────────────────────────────────────────────
+@app.delete("/api/job/{run_id}")
+async def delete_run(run_id: str, request: Request):
+    user = get_current_user(request)
+    # Resolve the run from memory or DB for the access check (404 if it exists nowhere).
+    job = jobs.get(run_id)
+    if job:
+        row_org, row_email = job.get("organization_id", ""), job.get("user_email", "")
+    else:
+        db_row = _db.get_run(run_id)
+        if not db_row:
+            raise HTTPException(404, "Run not found")
+        row_org, row_email = db_row.get("organization_id", ""), db_row.get("user_email", "")
+    if not _can_access(row_org, row_email, user):
+        raise HTTPException(403, "Access denied: this run belongs to another organization")
+    _db.delete_run(run_id)
+    jobs.pop(run_id, None)
+    return {"ok": True}
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -637,12 +676,12 @@ async def health():
 async def get_project_runs(project_id: str, request: Request):
     user = get_current_user(request)
     """Return all runs for a project: DB rows + any in-memory runs not yet persisted."""
-    # Verify the project belongs to the requesting user
+    # Verify the project is in the requesting user's organization
     project = _db.get_project(project_id)
     if not project:
         raise HTTPException(404, "Project not found")
-    if project.get("user_email") != user["email"]:
-        raise HTTPException(403, "Not your project")
+    if not _can_access(project.get("organization_id", ""), project.get("user_email", ""), user):
+        raise HTTPException(403, "Not your organization's project")
     try:
         db_runs = _db.get_runs_for_project(project_id)
         db_run_ids = {r["run_id"] for r in db_runs}
@@ -652,8 +691,8 @@ async def get_project_runs(project_id: str, request: Request):
         for rid, job in jobs.items():
             if job.get("project_id") != project_id or rid in db_run_ids:
                 continue
-            # Skip runs that belong to a different user
-            if job.get("user_email") and job["user_email"] != user["email"]:
+            # Skip runs outside the caller's organization
+            if not _can_access(job.get("organization_id", ""), job.get("user_email", ""), user):
                 continue
             results = job.get("results") or {}
             mem_runs.append({
@@ -703,6 +742,7 @@ async def create_project(body: _ProjectBody, request: Request):
     _db.save_project(
         body.project_id, user["email"], body.name, body.endpoint,
         body.api_key, body.document_text, body.document_name,
+        organization_id=user.get("organization_id", ""),
     )
     return {"ok": True}
 
@@ -710,16 +750,19 @@ async def create_project(body: _ProjectBody, request: Request):
 @app.get("/api/projects")
 async def list_projects(request: Request):
     user = get_current_user(request)
-    projects = _db.get_projects_for_user(user["email"])
+    projects = _db.get_projects_visible(user.get("organization_id", ""), user["email"])
     return {"projects": projects}
 
 
 @app.get("/api/projects/{project_id}")
 async def get_project(project_id: str, request: Request):
-    get_current_user(request)
+    user = get_current_user(request)
     project = _db.get_project(project_id)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
+    # Scope to the caller's organization — also prevents leaking the stored api_key.
+    if not _can_access(project.get("organization_id", ""), project.get("user_email", ""), user):
+        raise HTTPException(status_code=403, detail="Not your organization's project")
     return project
 
 
@@ -729,8 +772,9 @@ async def delete_project(project_id: str, request: Request):
     project = _db.get_project(project_id)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
-    if project.get("user_email") != user["email"]:
-        raise HTTPException(status_code=403, detail="Not your project")
+    # Org-wide: any member of the project's organization may delete it (and its runs).
+    if not _can_access(project.get("organization_id", ""), project.get("user_email", ""), user):
+        raise HTTPException(status_code=403, detail="Not your organization's project")
     _db.delete_project(project_id)
     return {"ok": True}
 

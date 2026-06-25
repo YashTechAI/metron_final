@@ -31,6 +31,8 @@ export default function ProjectLanding() {
   const [runs, setRuns] = useState<Run[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [confirmDeleteRunId, setConfirmDeleteRunId] = useState<string | null>(null);
+  const [isDeletingRun, setIsDeletingRun] = useState(false);
 
   useEffect(() => {
     if (!projectId) return;
@@ -75,6 +77,22 @@ export default function ProjectLanding() {
         setLoading(false);
       });
   }, [projectId]);
+
+  const handleDeleteRun = async (runId: string) => {
+    setIsDeletingRun(true);
+    try {
+      const res = await authFetch(`/api/job/${runId}`, { method: "DELETE" });
+      if (res.ok) {
+        setRuns((prev) => prev.filter((r) => r.run_id !== runId));
+        sessionStorage.removeItem(`run_health_${runId}`);
+      }
+    } catch {
+      // silently ignore — row stays if the request fails
+    } finally {
+      setIsDeletingRun(false);
+      setConfirmDeleteRunId(null);
+    }
+  };
 
   if (loading) {
     return (
@@ -203,6 +221,32 @@ export default function ProjectLanding() {
                       View Report
                       <span className="material-symbols-outlined text-sm">arrow_forward</span>
                     </button>
+                    {confirmDeleteRunId === run.run_id ? (
+                      <div className="flex items-center gap-2 animate-fade-in">
+                        <span className="text-[10px] font-black text-red-500 uppercase tracking-wider">Delete?</span>
+                        <button
+                          disabled={isDeletingRun}
+                          onClick={() => handleDeleteRun(run.run_id)}
+                          className="px-3 py-1.5 rounded-xl bg-red-500 text-white text-[10px] font-black uppercase tracking-wider hover:bg-red-600 transition-colors disabled:opacity-50"
+                        >
+                          {isDeletingRun ? "..." : "Yes"}
+                        </button>
+                        <button
+                          onClick={() => setConfirmDeleteRunId(null)}
+                          className="px-3 py-1.5 rounded-xl bg-[var(--color-surface-container-low)] text-[var(--color-on-surface)] text-[10px] font-black uppercase tracking-wider hover:bg-[var(--color-surface-variant)] transition-colors"
+                        >
+                          No
+                        </button>
+                      </div>
+                    ) : (
+                      <button
+                        onClick={() => setConfirmDeleteRunId(run.run_id)}
+                        title="Delete run"
+                        className="w-9 h-9 rounded-xl flex items-center justify-center text-[var(--color-outline)] opacity-0 group-hover:opacity-100 hover:bg-red-50 hover:text-red-500 transition-all"
+                      >
+                        <span className="material-symbols-outlined text-lg">delete</span>
+                      </button>
+                    )}
                   </div>
                 </div>
               );

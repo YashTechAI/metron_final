@@ -140,7 +140,8 @@ async def run_pipeline(
 
     # Write a 'running' placeholder to DB so a server crash is recoverable
     try:
-        _db.touch_run(run_id, project_id, user_email, config.agent_domain, config.application_type.value)
+        _db.touch_run(run_id, project_id, user_email, config.agent_domain, config.application_type.value,
+                      organization_id=getattr(config, "organization_id", ""))
     except Exception as _touch_err:
         print(f"[Pipeline] touch_run failed (non-fatal): {_touch_err}")
 
@@ -844,6 +845,7 @@ async def run_pipeline(
                 user_email=user_email,
                 total_passed=report.total_passed,
                 total_tests=report.total_tests,
+                organization_id=getattr(config, "organization_id", ""),
             )
         except Exception as db_err:
             print(f"[Pipeline] DB save failed (non-fatal): {db_err}")

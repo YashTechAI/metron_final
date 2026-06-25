@@ -3,7 +3,7 @@ Core DB layer — PostgreSQL persistence for run history and project configs.
 
 Schema:
   runs     — completed/failed evaluation runs (one row per run)
-  projects — saved project configs per user
+  projects — saved project configs (scoped by organization_id; creator in user_email)
 
 Connection config (env vars):
   DB_USER, DB_PASSWORD, DB_HOST, DB_PORT, DB_NAME
@@ -78,6 +78,7 @@ def init_db() -> None:
                     run_id             TEXT PRIMARY KEY,
                     project_id         TEXT NOT NULL,
                     user_email         TEXT,
+                    organization_id    TEXT,
                     timestamp          TEXT NOT NULL,
                     health_score       DOUBLE PRECISION,
                     domain             TEXT,
@@ -92,6 +93,10 @@ def init_db() -> None:
             cur.execute("CREATE INDEX IF NOT EXISTS idx_runs_project ON runs(project_id)")
             cur.execute("CREATE INDEX IF NOT EXISTS idx_runs_timestamp ON runs(timestamp)")
             cur.execute("CREATE INDEX IF NOT EXISTS idx_runs_user ON runs(user_email)")
+            # Additive migration for pre-existing DBs (idempotent). Org scopes visibility:
+            # any user in the same organization can see/manage the run.
+            cur.execute("ALTER TABLE runs ADD COLUMN IF NOT EXISTS organization_id TEXT")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_runs_org ON runs(organization_id)")
             # Mark any runs left in 'running' state as failed (crash recovery)
             cur.execute("UPDATE runs SET status='failed' WHERE status='running'")
 
@@ -99,6 +104,7 @@ def init_db() -> None:
                 CREATE TABLE IF NOT EXISTS projects (
                     project_id        TEXT PRIMARY KEY,
                     user_email        TEXT NOT NULL,
+                    organization_id   TEXT,
                     name              TEXT,
                     endpoint          TEXT,
                     api_key           TEXT,
@@ -116,6 +122,9 @@ def init_db() -> None:
             cur.execute("ALTER TABLE projects ADD COLUMN IF NOT EXISTS profile_json TEXT")
             cur.execute("ALTER TABLE projects ADD COLUMN IF NOT EXISTS tech_profile_json TEXT")
             cur.execute("ALTER TABLE projects ADD COLUMN IF NOT EXISTS document_sha TEXT")
+            # Org scopes visibility: any user in the same organization can see/manage the project.
+            cur.execute("ALTER TABLE projects ADD COLUMN IF NOT EXISTS organization_id TEXT")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_projects_org ON projects(organization_id)")
         conn.commit()
     finally:
         _put(conn)
@@ -132,6 +141,7 @@ def save_run(
     user_email: str = "",
     total_passed: Optional[int] = None,
     total_tests: Optional[int] = None,
+    organization_id: str = "",
 ) -> None:
     """Persist a completed run to Postgres (upsert on run_id)."""
     conn = _connect()
@@ -140,12 +150,13 @@ def save_run(
             cur.execute(
                 """
                 INSERT INTO runs
-                    (run_id, project_id, user_email, timestamp, health_score, domain,
-                     application_type, status, results_json, total_passed, total_tests)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    (run_id, project_id, user_email, organization_id, timestamp, health_score,
+                     domain, application_type, status, results_json, total_passed, total_tests)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (run_id) DO UPDATE SET
                     project_id       = EXCLUDED.project_id,
                     user_email       = EXCLUDED.user_email,
+                    organization_id  = EXCLUDED.organization_id,
                     timestamp        = EXCLUDED.timestamp,
                     health_score     = EXCLUDED.health_score,
                     domain           = EXCLUDED.domain,
@@ -159,6 +170,7 @@ def save_run(
                     run_id,
                     project_id,
                     user_email,
+                    organization_id,
                     datetime.utcnow().isoformat(),
                     health_score,
                     domain,
@@ -180,6 +192,7 @@ def touch_run(
     user_email: str,
     domain: str,
     application_type: str,
+    organization_id: str = "",
 ) -> None:
     """Insert a 'running' placeholder so crashes leave a DB record (no-op if it exists)."""
     conn = _connect()
@@ -188,11 +201,13 @@ def touch_run(
             cur.execute(
                 """
                 INSERT INTO runs
-                    (run_id, project_id, user_email, timestamp, domain, application_type, status)
-                VALUES (%s, %s, %s, %s, %s, %s, 'running')
+                    (run_id, project_id, user_email, organization_id, timestamp,
+                     domain, application_type, status)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, 'running')
                 ON CONFLICT (run_id) DO NOTHING
                 """,
-                (run_id, project_id, user_email, datetime.utcnow().isoformat(), domain, application_type),
+                (run_id, project_id, user_email, organization_id,
+                 datetime.utcnow().isoformat(), domain, application_type),
             )
         conn.commit()
     finally:
@@ -209,6 +224,19 @@ def mark_run_failed(run_id: str, error: str) -> None:
                 (json.dumps({"error": error}), run_id),
             )
         conn.commit()
+    finally:
+        _put(conn)
+
+
+def delete_run(run_id: str) -> bool:
+    """Delete a single run (and its inline token summary). Returns True if it existed."""
+    conn = _connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM runs WHERE run_id = %s", (run_id,))
+            deleted = cur.rowcount > 0
+        conn.commit()
+        return deleted
     finally:
         _put(conn)
 
@@ -300,7 +328,8 @@ def load_recent_jobs(hours: int = 24) -> List[Dict[str, Any]]:
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT run_id, status, results_json, token_summary_json, user_email, project_id
+                SELECT run_id, status, results_json, token_summary_json,
+                       user_email, organization_id, project_id
                 FROM runs
                 WHERE timestamp >= %s AND status IN ('completed', 'failed')
                 ORDER BY timestamp DESC
@@ -342,6 +371,7 @@ def save_project(
     api_key: str,
     document_text: str,
     document_name: str,
+    organization_id: str = "",
 ) -> None:
     conn = _connect()
     try:
@@ -349,18 +379,19 @@ def save_project(
             cur.execute(
                 """
                 INSERT INTO projects
-                    (project_id, user_email, name, endpoint, api_key,
+                    (project_id, user_email, organization_id, name, endpoint, api_key,
                      document_text, document_name, created_at)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (project_id) DO UPDATE SET
-                    user_email    = EXCLUDED.user_email,
-                    name          = EXCLUDED.name,
-                    endpoint      = EXCLUDED.endpoint,
-                    api_key       = EXCLUDED.api_key,
-                    document_text = EXCLUDED.document_text,
-                    document_name = EXCLUDED.document_name
+                    user_email      = EXCLUDED.user_email,
+                    organization_id = EXCLUDED.organization_id,
+                    name            = EXCLUDED.name,
+                    endpoint        = EXCLUDED.endpoint,
+                    api_key         = EXCLUDED.api_key,
+                    document_text   = EXCLUDED.document_text,
+                    document_name   = EXCLUDED.document_name
                 """,
-                (project_id, user_email, name, endpoint, api_key,
+                (project_id, user_email, organization_id, name, endpoint, api_key,
                  _strip_nul(document_text), _strip_nul(document_name),
                  datetime.utcnow().isoformat()),
             )
@@ -397,18 +428,31 @@ def save_project_profile(
         _put(conn)
 
 
-def get_projects_for_user(user_email: str) -> List[Dict[str, Any]]:
+def get_projects_visible(organization_id: str, user_email: str) -> List[Dict[str, Any]]:
+    """Projects visible to a caller.
+
+    With an organization_id: every project in that org, PLUS the caller's own legacy
+    projects that predate org tagging (organization_id NULL/empty). Without an org
+    (no-org token / local-dev bypass): just the caller's own projects.
+    """
+    if organization_id:
+        where = ("organization_id = %s "
+                 "OR (COALESCE(organization_id, '') = '' AND user_email = %s)")
+        params: tuple = (organization_id, user_email)
+    else:
+        where = "user_email = %s"
+        params = (user_email,)
     conn = _connect()
     try:
         with conn.cursor() as cur:
             cur.execute(
-                """
+                f"""
                 SELECT project_id, name, endpoint, document_name, created_at
                 FROM projects
-                WHERE user_email = %s
+                WHERE {where}
                 ORDER BY created_at DESC
                 """,
-                (user_email,),
+                params,
             )
             rows = cur.fetchall()
         return [dict(r) for r in rows]
