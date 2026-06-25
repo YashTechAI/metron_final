@@ -225,7 +225,7 @@ class TestConversationRunnerScenarioChaining:
         mock_get_adapter.return_value = adapter
 
         # State machine should NOT be called for scenario turns
-        mock_eval_gen.return_value = (None, ConversationState.SATISFIED, None, True)
+        mock_eval_gen.return_value = (None, ConversationState.SATISFIED, None, True, None)
 
         scenario_turns = [
             {"turn": 2, "prompt": "Follow up question", "expected_behavior": "Exp2"},
@@ -267,7 +267,7 @@ class TestConversationRunnerScenarioChaining:
         adapter = MagicMock()
         adapter.send = AsyncMock(return_value=self._make_adapter_response())
         mock_get_adapter.return_value = adapter
-        mock_eval_gen.return_value = (None, ConversationState.SATISFIED, None, True)
+        mock_eval_gen.return_value = (None, ConversationState.SATISFIED, None, True, None)
 
         scenario_turns = [
             {"turn": 2, "prompt": "Second", "expected_behavior": "Exp for turn 2"},
@@ -336,7 +336,7 @@ class TestConversationRunnerScenarioChaining:
         adapter = MagicMock()
         adapter.send = AsyncMock(return_value=self._make_adapter_response())
         mock_get_adapter.return_value = adapter
-        mock_eval_gen.return_value = (None, ConversationState.SATISFIED, None, True)
+        mock_eval_gen.return_value = (None, ConversationState.SATISFIED, None, True, None)
 
         # 2 scenario turns but max_turns=2 — only turn 1 + 1 scenario turn should run
         scenario_turns = [
@@ -367,10 +367,10 @@ class TestConversationRunnerScenarioChaining:
         adapter = MagicMock()
         adapter.send = AsyncMock(return_value=self._make_adapter_response())
         mock_get_adapter.return_value = adapter
-        # Dynamic gen returns a follow-up on first call, then stops
+        # Dynamic gen returns a follow-up (with its own expected_behavior) on first call, then stops
         mock_eval_gen.side_effect = [
-            ("Dynamic follow up", ConversationState.CLARIFYING, None, False),
-            (None, ConversationState.SATISFIED, None, True),
+            ("Dynamic follow up", ConversationState.CLARIFYING, None, False, "Exp for dynamic turn 2"),
+            (None, ConversationState.SATISFIED, None, True, None),
         ]
 
         prompt = GeneratedPrompt(
@@ -392,3 +392,33 @@ class TestConversationRunnerScenarioChaining:
         # Second turn query should be the dynamic follow-up
         if len(conv.turns) >= 2:
             assert conv.turns[1].query == "Dynamic follow up"
+            # #4: the dynamic turn carries ITS OWN expected_behavior (not turn 1's)
+            assert conv.turns[1].expected_behavior == "Exp for dynamic turn 2"
+
+    @patch("stages.s3_execution.conversation_runner._get_adapter")
+    @patch("stages.s3_execution.conversation_runner._combined_eval_generate")
+    def test_conversation_turns_zero_is_single_turn(self, mock_eval_gen, mock_get_adapter):
+        """conversation_turns=0 means 'no multi-turn' — exactly one opening turn, no follow-ups."""
+        from stages.s3_execution.conversation_runner import run_conversation
+
+        adapter = MagicMock()
+        adapter.send = AsyncMock(return_value=self._make_adapter_response())
+        mock_get_adapter.return_value = adapter
+
+        # Even with pre-crafted scenario turns available, none should fire when turns=0.
+        prompt = GeneratedPrompt(
+            persona_id="p1",
+            test_class=TestClass.FUNCTIONAL,
+            text="First message",
+            scenario_turns=[{"turn": 2, "prompt": "Follow up", "expected_behavior": "exp"}],
+        )
+        persona = make_persona()
+        persona.persona_id = "p1"
+        config = make_run_config(conversation_turns=0)
+
+        llm_client = MagicMock()
+        conv = self._run(run_conversation(persona, prompt, config, llm_client))
+
+        assert len(conv.turns) == 1            # one opening turn only
+        assert adapter.send.call_count == 1    # no follow-up message sent
+        mock_eval_gen.assert_not_called()      # no dynamic generation

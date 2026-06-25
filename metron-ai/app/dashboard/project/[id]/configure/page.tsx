@@ -652,7 +652,8 @@ export default function ConfigurePage() {
             <SliderField label="Scenarios" min={1} max={100} value={numScenarios} onChange={setNumScenarios} />
           </div>
           <div className="space-y-4">
-            <SliderField label="Conversation Turns" min={1} max={15} value={convTurns} onChange={setConvTurns} />
+            <SliderField label="Conversation Turns" min={0} max={15} value={convTurns} onChange={setConvTurns}
+              zeroLabel="Off" hint="0 = single-turn only (no multi-turn follow-ups)" />
             <label className="flex items-center gap-3 cursor-pointer">
               <div
                 onClick={() => setEnableJudge(!enableJudge)}
@@ -1139,14 +1140,16 @@ function Field({ label, children, error }: { label: string; children: React.Reac
   );
 }
 
-function SliderField({ label, min, max, value, onChange }: {
+function SliderField({ label, min, max, value, onChange, zeroLabel, hint }: {
   label: string; min: number; max: number; value: number; onChange: (v: number) => void;
+  zeroLabel?: string; hint?: string;
 }) {
+  const displayValue = value === 0 && zeroLabel ? zeroLabel : String(value);
   return (
     <div className="space-y-1.5">
       <div className="flex justify-between">
         <label className="text-xs font-bold uppercase tracking-widest text-[var(--color-on-surface-variant)] opacity-70">{label}</label>
-        <span className="text-xs font-black text-primary">{value}</span>
+        <span className="text-xs font-black text-primary">{displayValue}</span>
       </div>
       <input
         type="range"
@@ -1158,8 +1161,11 @@ function SliderField({ label, min, max, value, onChange }: {
         className="w-full accent-primary"
       />
       <div className="flex justify-between text-[10px] text-[var(--color-on-surface-variant)] opacity-40">
-        <span>{min}</span><span>{max}</span>
+        <span>{value === 0 && zeroLabel ? zeroLabel : min}</span><span>{max}</span>
       </div>
+      {hint && value === 0 && (
+        <p className="text-[10px] text-[var(--color-on-surface-variant)] opacity-50">{hint}</p>
+      )}
     </div>
   );
 }

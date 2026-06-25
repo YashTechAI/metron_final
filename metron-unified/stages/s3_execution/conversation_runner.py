@@ -72,7 +72,8 @@ Return JSON:
   "goal_progress": "achieved" | "partial" | "none",
   "new_state": "seeking" | "clarifying" | "frustrated" | "escalating" | "satisfied" | "abandoned",
   "reasoning": "<1 sentence: why this response type and state>",
-  "next_message": "<persona's next message in their voice, or null if goal achieved or abandoned>"
+  "next_message": "<persona's next message in their voice, or null if goal achieved or abandoned>",
+  "next_expected_behavior": "<what a CORRECT, COMPLETE answer to next_message should contain — be specific; null if next_message is null>"
 }}
 
 Rules:
@@ -80,6 +81,8 @@ Rules:
 - If persona is frustrated and response is vague again → escalate or abandon based on patience
 - next_message must match the persona's current emotional state (frustrated → more blunt)
 - If next_message is null, the conversation ends
+- next_expected_behavior describes what a good answer to next_message looks like (it is used to
+  grade the NEXT turn). It MUST be null whenever next_message is null.
 """
 
 
@@ -96,13 +99,17 @@ def _get_adapter(config: RunConfig) -> object:
         response_trim_marker=getattr(config, "response_trim_marker", None),
     )
     if config.application_type == ApplicationType.RAG:
+        # RAG is single-turn (the loop breaks after turn 1), so no persistent session.
         return RAGAdapter(**kwargs)
     elif config.application_type == ApplicationType.MULTI_AGENT:
-        return MultiAgentAdapter(**kwargs)
+        return MultiAgentAdapter(**kwargs, persistent_session=True)
     elif config.application_type == ApplicationType.FORM:
-        return FormAdapter(**kwargs)
+        return FormAdapter(**kwargs, persistent_session=True)
     else:
-        return ChatbotAdapter(**kwargs, session_mode=getattr(config, "session_mode", "session_id"))
+        # persistent_session reuses one cookie-jar session across turns so cookie-based
+        # conversation continuity survives the whole conversation (closed in run_conversation).
+        return ChatbotAdapter(**kwargs, session_mode=getattr(config, "session_mode", "session_id"),
+                              persistent_session=True)
 
 
 async def run_conversation(
@@ -112,11 +119,35 @@ async def run_conversation(
     llm_client: LLMClient,
     project_id: str = "",
 ) -> Conversation:
-    """
-    Run a full conversation for one persona + prompt pair.
-    Returns a Conversation with all turns logged.
+    """Run a full conversation for one persona + prompt pair (all turns logged).
+
+    Wraps the turn loop so the adapter's per-conversation persistent session (the cookie
+    continuity that lets the target remember the conversation across turns) is always
+    closed when the conversation ends.
     """
     adapter = _get_adapter(config)
+    try:
+        return await _run_conversation_turns(
+            adapter, persona, prompt, config, llm_client, project_id
+        )
+    finally:
+        _aclose = getattr(adapter, "aclose", None)
+        if _aclose is not None:
+            try:
+                await _aclose()
+            except Exception:
+                pass
+
+
+async def _run_conversation_turns(
+    adapter,
+    persona: Persona,
+    prompt: GeneratedPrompt,
+    config: RunConfig,
+    llm_client: LLMClient,
+    project_id: str = "",
+) -> Conversation:
+    """The turn loop itself. `adapter` is created and closed by run_conversation()."""
     conversation = Conversation(
         project_id=project_id,
         persona_id=persona.persona_id,
@@ -129,8 +160,14 @@ async def run_conversation(
     # Cap at 15 turns maximum to prevent runaway cost while still respecting
     # user-configured values up to 15. Warn when config is overridden.
     _MAX_TURNS_HARD_CAP = 15
-    configured_turns = getattr(config, "conversation_turns", _DEFAULT_MAX_TURNS) or _DEFAULT_MAX_TURNS
-    max_turns = min(configured_turns, _MAX_TURNS_HARD_CAP)
+    configured_turns = getattr(config, "conversation_turns", None)
+    if configured_turns is None:
+        configured_turns = _DEFAULT_MAX_TURNS
+    configured_turns = int(configured_turns)
+    # conversation_turns=0 means "no multi-turn": run a single opening turn with no
+    # follow-ups. Only a missing/None value falls back to the default — so 0 is honored,
+    # not silently bumped back up to the default.
+    max_turns = max(1, min(configured_turns, _MAX_TURNS_HARD_CAP))
     if configured_turns > _MAX_TURNS_HARD_CAP:
         print(f"[ConversationRunner] conversation_turns={configured_turns} exceeds cap of {_MAX_TURNS_HARD_CAP}, using {_MAX_TURNS_HARD_CAP}")
 
@@ -236,7 +273,7 @@ async def run_conversation(
                 continue  # skip _combined_eval_generate; resume loop with pre-crafted message
 
         # Combined eval+generate for subsequent turns
-        next_msg, new_state, response_type, goal_achieved = await _combined_eval_generate(
+        next_msg, new_state, response_type, goal_achieved, next_exp = await _combined_eval_generate(
             persona=persona,
             ai_response=turn.response,
             history="\n".join(history_lines[-8:]),   # last 4 exchanges
@@ -257,6 +294,10 @@ async def run_conversation(
             break
 
         current_message = next_msg
+        # Carry the model's expected_behavior for the dynamically-generated next message so
+        # the next turn is graded against ITS own criteria (not turn 1's). Without this,
+        # dynamic follow-up turns fall back to turn 1's expected_behavior and are mis-scored.
+        next_expected_behavior = next_exp
 
     conversation.final_state = current_state
     if conversation.goal_achieved is None:
@@ -271,10 +312,12 @@ async def _combined_eval_generate(
     history: str,
     current_state: ConversationState,
     llm_client: LLMClient,
-) -> tuple[Optional[str], ConversationState, Optional[ResponseType], bool]:
+) -> tuple[Optional[str], ConversationState, Optional[ResponseType], bool, Optional[str]]:
     """
     Single LLM call: evaluate AI response + generate persona's next message.
-    Returns (next_message, new_state, response_type, goal_achieved).
+    Returns (next_message, new_state, response_type, goal_achieved, next_expected_behavior).
+    next_expected_behavior is what a correct answer to next_message should contain (used to
+    grade the next turn); it is None whenever next_message is None.
     """
     prompt = COMBINED_TURN_PROMPT.format(
         name=persona.name,
@@ -314,10 +357,13 @@ async def _combined_eval_generate(
         if next_msg and len(str(next_msg).strip()) < 3:
             next_msg = None
 
-        return next_msg, new_state, response_type, goal_achieved
+        # Expected behavior for the generated next message — only meaningful when there IS one.
+        next_exp = (data.get("next_expected_behavior") or None) if next_msg else None
+
+        return next_msg, new_state, response_type, goal_achieved, next_exp
     except Exception as e:
         print(f"[ConversationRunner] Persona turn eval failed for '{persona.name}' — ending conversation. Error: {e}")
-        return None, ConversationState.ABANDONED, ResponseType.VAGUE, False
+        return None, ConversationState.ABANDONED, ResponseType.VAGUE, False, None
 
 
 async def run_ground_truth_conversations(

@@ -28,7 +28,41 @@ class AdapterResponse:
         return self.error is None and not self.text.startswith("[Error")
 
 
-class ChatbotAdapter:
+class _SessionMixin:
+    """Shared aiohttp session management for adapters.
+
+    Default (persistent_session=False): a fresh ClientSession per send() — the original
+    behavior, used by one-shot callers (connect-test, performance evaluation).
+
+    persistent_session=True: ONE ClientSession (with its cookie jar) is reused across all
+    send() calls, so cookie-based conversation continuity survives multiple turns. The
+    adapter is created per-conversation and its turns run sequentially, so no locking is
+    needed. The owner (run_conversation) must call aclose() when the conversation ends.
+    """
+
+    def _init_session(self, persistent: bool) -> None:
+        self._persistent_session = persistent
+        self._session: Optional[aiohttp.ClientSession] = None
+
+    async def _acquire_session(self) -> Tuple[aiohttp.ClientSession, bool]:
+        """Return (session, should_close_after_use)."""
+        if not self._persistent_session:
+            return aiohttp.ClientSession(), True
+        if self._session is None or self._session.closed:
+            # unsafe=True so cookies are stored even for bare IP-address endpoints
+            # (test targets are often http://<ip> / localhost, which a safe jar drops).
+            self._session = aiohttp.ClientSession(cookie_jar=aiohttp.CookieJar(unsafe=True))
+        return self._session, False
+
+    async def aclose(self) -> None:
+        """Close the persistent session, if any. Safe on non-persistent adapters."""
+        session = getattr(self, "_session", None)
+        if session is not None and not session.closed:
+            await session.close()
+        self._session = None
+
+
+class ChatbotAdapter(_SessionMixin):
     """
     Sends {request_field: message} → reads {response_field: answer}.
     If request_template is set, renders the full JSON body instead.
@@ -46,6 +80,7 @@ class ChatbotAdapter:
         request_template:     Optional[str] = None,
         response_trim_marker: Optional[str] = None,
         session_mode:         str = "session_id",
+        persistent_session:   bool = False,
     ):
         self.endpoint_url         = endpoint_url
         self.request_field        = request_field
@@ -54,6 +89,7 @@ class ChatbotAdapter:
         self.request_template     = request_template
         self.response_trim_marker = response_trim_marker
         self.session_mode         = session_mode
+        self._init_session(persistent_session)
         self.headers: Dict[str, str] = {"Content-Type": "application/json"}
         if auth_token and "bearer" in auth_type.lower():
             self.headers["Authorization"] = f"Bearer {auth_token}"
@@ -114,34 +150,37 @@ class ChatbotAdapter:
         conversation_id: str = "",
     ) -> AdapterResponse:
         start = time.monotonic()
+        session, _close_session = await self._acquire_session()
         try:
             payload = self._build_payload(message, conversation_id, history)
-            async with aiohttp.ClientSession() as session:
-                async with session.post(
-                    self.endpoint_url,
-                    json=payload,
-                    headers=self.headers,
-                    timeout=aiohttp.ClientTimeout(total=self.timeout),
-                ) as resp:
-                    latency = (time.monotonic() - start) * 1000
-                    if resp.status != 200:
-                        return AdapterResponse("", latency, error=f"HTTP {resp.status}")
-                    data = await resp.json(content_type=None)
-                    text = self._trim_response(self._extract(data, self.response_field))
-                    # If configured path fails, try A2A protocol auto-detection before giving up.
-                    if text.startswith(("[Field ", "[Index ", "[Empty", "[No item")):
-                        a2a_text = self._try_extract_a2a(data)
-                        if a2a_text:
-                            text = self._trim_response(a2a_text)
-                        else:
-                            return AdapterResponse("", latency, error=text, raw_data=data)
-                    return AdapterResponse(text, latency, raw_data=data)
+            async with session.post(
+                self.endpoint_url,
+                json=payload,
+                headers=self.headers,
+                timeout=aiohttp.ClientTimeout(total=self.timeout),
+            ) as resp:
+                latency = (time.monotonic() - start) * 1000
+                if resp.status != 200:
+                    return AdapterResponse("", latency, error=f"HTTP {resp.status}")
+                data = await resp.json(content_type=None)
+                text = self._trim_response(self._extract(data, self.response_field))
+                # If configured path fails, try A2A protocol auto-detection before giving up.
+                if text.startswith(("[Field ", "[Index ", "[Empty", "[No item")):
+                    a2a_text = self._try_extract_a2a(data)
+                    if a2a_text:
+                        text = self._trim_response(a2a_text)
+                    else:
+                        return AdapterResponse("", latency, error=text, raw_data=data)
+                return AdapterResponse(text, latency, raw_data=data)
         except aiohttp.ClientConnectorError as e:
             latency = (time.monotonic() - start) * 1000
             return AdapterResponse("", latency, error=f"Connection refused: {e}")
         except Exception as e:
             latency = (time.monotonic() - start) * 1000
             return AdapterResponse("", latency, error=str(e))
+        finally:
+            if _close_session:
+                await session.close()
 
     async def test_connection(self) -> Tuple[bool, str]:
         resp = await self.send("Hello, this is a connectivity test.")

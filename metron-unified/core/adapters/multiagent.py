@@ -12,7 +12,7 @@ from typing import Any, Dict, List, Optional
 
 import aiohttp
 
-from .chatbot import AdapterResponse
+from .chatbot import AdapterResponse, _SessionMixin
 
 _TRACE_FIELD_CANDIDATES = [
     "agent_trace", "trace", "steps", "intermediate_steps",
@@ -23,7 +23,7 @@ _FINAL_ANSWER_CANDIDATES = [
 ]
 
 
-class MultiAgentAdapter:
+class MultiAgentAdapter(_SessionMixin):
     def __init__(
         self,
         endpoint_url:         str,
@@ -34,6 +34,7 @@ class MultiAgentAdapter:
         timeout:              int = 60,
         request_template:     Optional[str] = None,
         response_trim_marker: Optional[str] = None,
+        persistent_session:   bool = False,
     ):
         self.endpoint_url         = endpoint_url
         self.request_field        = request_field
@@ -41,6 +42,7 @@ class MultiAgentAdapter:
         self.timeout              = timeout
         self.request_template     = request_template
         self.response_trim_marker = response_trim_marker
+        self._init_session(persistent_session)
         self.headers: Dict[str, str] = {"Content-Type": "application/json"}
         if auth_type == "bearer" and auth_token:
             self.headers["Authorization"] = f"Bearer {auth_token}"
@@ -70,26 +72,29 @@ class MultiAgentAdapter:
     ) -> AdapterResponse:
         payload = self._build_payload(message, conversation_id)
         start = time.monotonic()
+        session, _close_session = await self._acquire_session()
         try:
-            async with aiohttp.ClientSession() as session:
-                async with session.post(
-                    self.endpoint_url,
-                    json=payload,
-                    headers=self.headers,
-                    timeout=aiohttp.ClientTimeout(total=self.timeout),
-                ) as resp:
-                    latency = (time.monotonic() - start) * 1000
-                    if resp.status != 200:
-                        return AdapterResponse("", latency, error=f"HTTP {resp.status}")
-                    data = await resp.json(content_type=None)
-                    text  = self._trim_response(self._extract_text(data))
-                    trace = self._extract_trace(data)
-                    if text.startswith(("[Field ", "[Index ", "[Empty")):
-                        return AdapterResponse("", latency, error=text, agent_trace=trace)
-                    return AdapterResponse(text, latency, agent_trace=trace)
+            async with session.post(
+                self.endpoint_url,
+                json=payload,
+                headers=self.headers,
+                timeout=aiohttp.ClientTimeout(total=self.timeout),
+            ) as resp:
+                latency = (time.monotonic() - start) * 1000
+                if resp.status != 200:
+                    return AdapterResponse("", latency, error=f"HTTP {resp.status}")
+                data = await resp.json(content_type=None)
+                text  = self._trim_response(self._extract_text(data))
+                trace = self._extract_trace(data)
+                if text.startswith(("[Field ", "[Index ", "[Empty")):
+                    return AdapterResponse("", latency, error=text, agent_trace=trace)
+                return AdapterResponse(text, latency, agent_trace=trace)
         except Exception as e:
             latency = (time.monotonic() - start) * 1000
             return AdapterResponse("", latency, error=str(e))
+        finally:
+            if _close_session:
+                await session.close()
 
     def _extract_text(self, data: Dict[str, Any]) -> str:
         parts = self.response_field.split(".")
