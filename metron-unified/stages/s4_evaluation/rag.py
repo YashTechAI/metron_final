@@ -445,7 +445,8 @@ async def evaluate_rag(
 
     # ── Answer Relevancy — all conversations ──────────────────────────────────
     try:
-        deval_model = make_deepeval_model(config)
+        # Pass llm_client as usage_sink so DeepEval RAG judge calls count toward the LLMOps summary.
+        deval_model = make_deepeval_model(config, usage_sink=llm_client)
     except Exception as e:
         print(f"[RAG/DeepEval] Could not init model: {e}")
         deval_model = None

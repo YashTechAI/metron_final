@@ -429,7 +429,8 @@ async def evaluate_functional(
     results: List[MetricResult] = []
 
     _set_azure_env(config)
-    deval_model = make_deepeval_model(config)
+    # Pass llm_client as usage_sink so DeepEval judge calls count toward the LLMOps summary.
+    deval_model = make_deepeval_model(config, usage_sink=llm_client)
     if deval_model is None:
         print("[FunctionalEval] WARNING: LLM judge not configured (no NIA org config / .env "
               "LLM_MODEL) — DeepEval metrics (hallucination, answer_relevancy, usefulness) will be skipped.")

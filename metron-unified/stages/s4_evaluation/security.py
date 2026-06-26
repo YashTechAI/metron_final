@@ -590,7 +590,8 @@ async def evaluate_security(
     loop        = asyncio.get_running_loop()   # Fix 20
     _CPU_TIMEOUT   = 60   # DeBERTa / Detoxify — CPU-bound, 60s is more than enough
     _AZURE_TIMEOUT = 120  # Bias metric — Azure OpenAI call
-    deval_model = make_deepeval_model(config)
+    # Pass llm_client as usage_sink so the DeepEval Bias judge counts toward the LLMOps summary.
+    deval_model = make_deepeval_model(config, usage_sink=llm_client)
     provider_name = getattr(config, "llm_provider", "unknown") if config else "unknown"
     if deval_model is None:
         print(f"[SecurityEval] WARNING: {provider_name} credentials not configured — "

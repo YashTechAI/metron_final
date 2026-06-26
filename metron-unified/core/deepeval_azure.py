@@ -49,10 +49,14 @@ class _DeepEvalAzureOpenAI:
     pass
 
 
-def make_deepeval_azure_model():
+def make_deepeval_azure_model(usage_sink=None):
     """
     Build and return a DeepEvalBaseLLM-compatible Azure OpenAI model instance.
     Returns None if deepeval or openai is not installed.
+
+    usage_sink: optional object with record_external_usage(model, prompt_tokens,
+    completion_tokens, cost_usd, latency_ms) — when provided, every judge call's token
+    usage is reported to it so the LLMOps summary includes evaluation spend.
     """
     try:
         from deepeval.models import DeepEvalBaseLLM
@@ -83,6 +87,7 @@ def make_deepeval_azure_model():
             self._base_url    = base_url
             self._api_key     = api_key
             self._api_version = api_version
+            self._usage_sink  = usage_sink
             super().__init__(model_name=f"azure-{deployment}")
 
         def load_model(self):
@@ -94,17 +99,30 @@ def make_deepeval_azure_model():
                 max_retries=0,
             )
 
+        def _record_usage(self, response, latency_ms: float) -> None:
+            if self._usage_sink is None:
+                return
+            try:
+                usage = getattr(response, "usage", None)
+                p = int(getattr(usage, "prompt_tokens", 0) or 0)
+                c = int(getattr(usage, "completion_tokens", 0) or 0)
+                self._usage_sink.record_external_usage(f"azure/{self._deployment}", p, c, 0.0, latency_ms)
+            except Exception:
+                pass
+
         def generate(self, prompt: str) -> str:
             import time
             last_exc = None
             for attempt in range(3):
                 try:
+                    _t0 = time.monotonic()
                     response = self.model.chat.completions.create(
                         model=self._deployment,
                         messages=[{"role": "user", "content": prompt}],
                         temperature=0,
                         max_tokens=2048,
                     )
+                    self._record_usage(response, (time.monotonic() - _t0) * 1000.0)
                     return response.choices[0].message.content
                 except Exception as e:
                     last_exc = e
@@ -130,11 +148,14 @@ def make_deepeval_azure_model():
 
 # ── Generic LiteLLM-backed wrapper ────────────────────────────────────────────
 
-def _make_deepeval_litellm_model(model_name: str, litellm_kwargs: Dict[str, Any]):
+def _make_deepeval_litellm_model(model_name: str, litellm_kwargs: Dict[str, Any], usage_sink=None):
     """
     Build a DeepEvalBaseLLM subclass that calls litellm.completion() synchronously.
     Works for any provider supported by LiteLLM (Gemini, Bedrock, Groq, NIM, etc.).
     Returns None if deepeval is not installed.
+
+    usage_sink: optional object with record_external_usage(...) — when provided, each
+    judge call's token usage (and cost) is reported so the LLMOps summary includes it.
     """
     try:
         from deepeval.models import DeepEvalBaseLLM
@@ -145,10 +166,27 @@ def _make_deepeval_litellm_model(model_name: str, litellm_kwargs: Dict[str, Any]
         def __init__(self):
             self._model_name = model_name
             self._kwargs = litellm_kwargs
+            self._usage_sink = usage_sink
             super().__init__(model_name=model_name)
 
         def load_model(self):
             return None   # stateless — litellm handles the connection
+
+        def _record_usage(self, response, latency_ms: float) -> None:
+            if self._usage_sink is None:
+                return
+            try:
+                import litellm
+                usage = getattr(response, "usage", None)
+                p = int(getattr(usage, "prompt_tokens", 0) or 0)
+                c = int(getattr(usage, "completion_tokens", 0) or 0)
+                try:
+                    cost = float(litellm.completion_cost(completion_response=response, model=self._model_name))
+                except Exception:
+                    cost = 0.0
+                self._usage_sink.record_external_usage(self._model_name, p, c, cost, latency_ms)
+            except Exception:
+                pass
 
         def generate(self, prompt: str) -> str:
             import time
@@ -156,6 +194,7 @@ def _make_deepeval_litellm_model(model_name: str, litellm_kwargs: Dict[str, Any]
             last_exc = None
             for attempt in range(3):
                 try:
+                    _t0 = time.monotonic()
                     response = litellm.completion(
                         model=self._model_name,
                         messages=[{"role": "user", "content": prompt}],
@@ -163,6 +202,7 @@ def _make_deepeval_litellm_model(model_name: str, litellm_kwargs: Dict[str, Any]
                         max_tokens=2048,
                         **self._kwargs,
                     )
+                    self._record_usage(response, (time.monotonic() - _t0) * 1000.0)
                     return response.choices[0].message.content or ""
                 except Exception as e:
                     last_exc = e
@@ -186,7 +226,7 @@ def _make_deepeval_litellm_model(model_name: str, litellm_kwargs: Dict[str, Any]
     return _LiteLLMModel()
 
 
-def make_deepeval_model(config=None):
+def make_deepeval_model(config=None, usage_sink=None):
     """
     Build the DeepEval judge model. Resolution priority:
       1. Per-org config from the NIA DB (when config.organization_id + NIA configured)
@@ -197,6 +237,9 @@ def make_deepeval_model(config=None):
       bedrock/    → LiteLLM wrapper + AWS creds (from org config or env)
       gemini/…    → LiteLLM wrapper with the resolved api_key (+ reasoning_effort disable)
       nvidia_nim/ → LiteLLM wrapper with api_key + NVIDIA api_base
+
+    usage_sink: pass the run's LLMClient so judge-call token usage is counted in the
+    LLMOps summary (otherwise DeepEval's calls bypass the counter entirely).
 
     Returns None when deepeval is unavailable or credentials are missing.
     """
@@ -212,7 +255,7 @@ def make_deepeval_model(config=None):
     prefix = model_name.split("/", 1)[0] if "/" in model_name else ""
 
     if prefix == "azure":
-        return make_deepeval_azure_model()
+        return make_deepeval_azure_model(usage_sink=usage_sink)
 
     if prefix == "bedrock":
         aws_key    = extra.get("aws_access_key_id")     or os.environ.get("AWS_ACCESS_KEY_ID", "")
@@ -225,7 +268,7 @@ def make_deepeval_model(config=None):
             "aws_access_key_id":     aws_key,
             "aws_secret_access_key": aws_secret,
             "aws_region_name":       aws_region,
-        })
+        }, usage_sink=usage_sink)
 
     if not model_name or not api_key:
         return None
@@ -241,4 +284,4 @@ def make_deepeval_model(config=None):
     for k, v in extra.items():
         kwargs.setdefault(k, v)
 
-    return _make_deepeval_litellm_model(model_name, kwargs)
+    return _make_deepeval_litellm_model(model_name, kwargs, usage_sink=usage_sink)

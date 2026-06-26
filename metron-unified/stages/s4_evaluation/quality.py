@@ -202,7 +202,8 @@ async def evaluate_quality(
     from stages.s4_evaluation.functional import _set_azure_env
     _set_azure_env(config)
 
-    deval_model = make_deepeval_model(config)
+    # Pass llm_client as usage_sink so DeepEval GEval judge calls count toward the LLMOps summary.
+    deval_model = make_deepeval_model(config, usage_sink=llm_client)
     if deval_model is None:
         print("[QualityEval] WARNING: LLM judge not configured (no NIA org config / .env "
               "LLM_MODEL) — GEval quality criteria will be skipped.")

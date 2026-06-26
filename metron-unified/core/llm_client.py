@@ -13,6 +13,7 @@ import json
 import os
 import random
 import re
+import threading
 import time
 from typing import Any, Optional
 
@@ -169,6 +170,10 @@ class LLMClient:
         self._stage_totals: dict = {}   # stage → {calls, total_tokens, cost_usd}
         self._models_used: dict = {}    # model_name → call count
         self._pipeline_start: float = time.monotonic()
+        # Guards the counters above. They are mutated both from the event loop
+        # (LLMClient._call) AND from worker threads (the DeepEval judge wrappers call
+        # record_external_usage via run_in_executor), so updates must be locked.
+        self._counter_lock = threading.Lock()
 
     # ── Public API ─────────────────────────────────────────────────────────
 
@@ -357,9 +362,6 @@ class LLMClient:
         response = await asyncio.wait_for(litellm.acompletion(**kwargs), timeout=45)
         _latency_ms = (time.monotonic() - _t0) * 1000.0
 
-        # Track which model served this call
-        self._models_used[model] = self._models_used.get(model, 0) + 1
-
         # Detect context truncation (finish_reason == "length" means max_tokens hit)
         _finish_reason = ""
         if response.choices:
@@ -374,19 +376,53 @@ class LLMClient:
                 cost = float(litellm.completion_cost(completion_response=response, model=model))
             except Exception:
                 cost = 0.0
-            self._token_totals["prompt"]     += p
-            self._token_totals["completion"] += c
-            self._token_totals["calls"]      += 1
-            self._token_totals["cost_usd"]   += cost
-            self._token_totals["latency_ms"] += _latency_ms
-            if _finish_reason == "length":
-                self._token_totals["truncated_calls"] += 1
-            st = self._stage_totals.setdefault(self._current_stage, {"calls": 0, "total_tokens": 0, "cost_usd": 0.0})
-            st["calls"]        += 1
-            st["total_tokens"] += p + c
-            st["cost_usd"]     += cost
+            self._accumulate(model, p, c, cost, _latency_ms, self._current_stage,
+                             truncated=(_finish_reason == "length"))
 
         return response.choices[0].message.content or ""
+
+    def _accumulate(
+        self, model: str, prompt_tokens: int, completion_tokens: int,
+        cost_usd: float, latency_ms: float, stage: str, truncated: bool = False,
+    ) -> None:
+        """Thread-safe accumulation of one LLM call's usage into the run counters.
+
+        Safe to call from the event loop (LLMClient._call) or from worker threads
+        (the DeepEval judge wrappers, via record_external_usage).
+        """
+        with self._counter_lock:
+            self._token_totals["prompt"]     += prompt_tokens
+            self._token_totals["completion"] += completion_tokens
+            self._token_totals["calls"]      += 1
+            self._token_totals["cost_usd"]   += cost_usd
+            self._token_totals["latency_ms"] += latency_ms
+            if truncated:
+                self._token_totals["truncated_calls"] += 1
+            self._models_used[model] = self._models_used.get(model, 0) + 1
+            st = self._stage_totals.setdefault(
+                stage or "unknown", {"calls": 0, "total_tokens": 0, "cost_usd": 0.0}
+            )
+            st["calls"]        += 1
+            st["total_tokens"] += prompt_tokens + completion_tokens
+            st["cost_usd"]     += cost_usd
+
+    def record_external_usage(
+        self, model: str, prompt_tokens: int, completion_tokens: int,
+        cost_usd: float = 0.0, latency_ms: float = 0.0, stage: Optional[str] = None,
+    ) -> None:
+        """Record usage from an LLM call made OUTSIDE this client (e.g. the DeepEval
+        judge metrics), so the LLMOps token summary includes evaluation/judge spend.
+
+        Attributed to the current pipeline stage unless `stage` is given. Thread-safe.
+        """
+        self._accumulate(
+            model,
+            int(prompt_tokens or 0),
+            int(completion_tokens or 0),
+            float(cost_usd or 0.0),
+            float(latency_ms or 0.0),
+            stage or self._current_stage,
+        )
 
     @staticmethod
     def _extract_json(text: str) -> Any:
