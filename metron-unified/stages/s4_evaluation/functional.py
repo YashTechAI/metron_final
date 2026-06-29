@@ -407,6 +407,254 @@ async def _cross_turn_consistency(
         raise
 
 
+# ── Combined per-conversation judge (token optimization) ──────────────────────
+# One LLM call returns every functional sub-score, replacing the former per-turn
+# hallucination + answer_relevancy + llm_judge + per-conversation usefulness +
+# completeness + cross_turn_consistency calls (≈12 calls → 1 per conversation).
+
+_COMBINED_FUNCTIONAL_PROMPT = """
+You are a strict evaluator of an AI assistant's response. Score each dimension from
+0.0 to 1.0 (1.0 = best). Judge ONLY from the evidence below.
+
+DOMAIN: {domain}
+
+USER QUESTION:
+{question}
+
+AI RESPONSE:
+{response}
+
+EXPECTED BEHAVIOR (what a correct, complete answer should contain):
+{expected}
+{context_section}{transcript_section}
+Score these dimensions (0.0-1.0):
+- factual_accuracy: Is the response factually sound{context_note} and free of false claims/hallucinations? 1.0 = fully accurate, 0.0 = clearly wrong.
+- answer_relevancy: Does it directly address the question (no padding/off-topic)? 1.0 = fully on-point.
+- relevance: Does it address the question's intent?
+- accuracy: Is the information correct?
+- helpfulness: Does it help the user achieve their goal?
+- usefulness: Is it directly useful, actionable, and complete enough to accomplish the goal without further clarification?
+- completeness: Does it cover all key points from the EXPECTED BEHAVIOR? (0.5 if no expected behavior is given)
+- answer_similarity: How semantically similar is it to the EXPECTED BEHAVIOR? (0.5 if none)
+- consistency: Across the conversation, does the AI avoid contradicting itself? (1.0 if single-turn / null if not applicable)
+- context_awareness: Does the AI build on information from earlier turns? (null if single-turn)
+
+Return ONLY this JSON:
+{{
+  "factual_accuracy": <0.0-1.0>,
+  "answer_relevancy": <0.0-1.0>,
+  "relevance": <0.0-1.0>,
+  "accuracy": <0.0-1.0>,
+  "helpfulness": <0.0-1.0>,
+  "usefulness": <0.0-1.0>,
+  "completeness": <0.0-1.0>,
+  "answer_similarity": <0.0-1.0>,
+  "consistency": <0.0-1.0 or null>,
+  "context_awareness": <0.0-1.0 or null>,
+  "reasoning": "<2-3 sentences>"
+}}
+"""
+
+
+async def _combined_functional_eval(
+    question: str,
+    response: str,
+    expected: str,
+    domain: str,
+    retrieved_context: Optional[list],
+    transcript: str,
+    llm_client: LLMClient,
+) -> dict:
+    """One judge call returning every functional sub-score. Raises on failure."""
+    context_section = ""
+    context_note = ""
+    if retrieved_context:
+        ctx = "\n".join(str(c) for c in retrieved_context[:3])[:1500]
+        context_section = f"\nREFERENCE CONTEXT (treat as ground truth for factual_accuracy):\n{ctx}\n"
+        context_note = " given the reference context"
+    transcript_section = ""
+    if transcript:
+        transcript_section = f"\nFULL TRANSCRIPT (for consistency / context_awareness):\n{transcript[:1500]}\n"
+
+    prompt = _COMBINED_FUNCTIONAL_PROMPT.format(
+        domain=domain,
+        question=question[:400],
+        response=response[:2000],
+        expected=(expected[:400] if expected else "A helpful, accurate, complete response."),
+        context_section=context_section,
+        context_note=context_note,
+        transcript_section=transcript_section,
+    )
+    data = await llm_client.complete_json(
+        prompt, temperature=0.1, max_tokens=500, task="judge", retries=2,
+    )
+
+    def _f(key: str, default: float = 0.5, allow_none: bool = False):
+        v = data.get(key, default)
+        if v is None:
+            return None if allow_none else default
+        try:
+            return round(float(v), 4)
+        except (TypeError, ValueError):
+            return default
+
+    return {
+        "factual_accuracy":  _f("factual_accuracy"),
+        "answer_relevancy":  _f("answer_relevancy"),
+        "relevance":         _f("relevance"),
+        "accuracy":          _f("accuracy"),
+        "helpfulness":       _f("helpfulness"),
+        "usefulness":        _f("usefulness"),
+        "completeness":      _f("completeness"),
+        "answer_similarity": _f("answer_similarity"),
+        "consistency":       _f("consistency", 1.0, allow_none=True),
+        "context_awareness": _f("context_awareness", 0.5, allow_none=True),
+        "reasoning":         str(data.get("reasoning", "") or ""),
+    }
+
+
+async def _eval_functional_conv(
+    conv: Conversation,
+    *,
+    persona_map: dict,
+    llm_client: LLMClient,
+    run_judge: bool,
+    active_deval: set,
+    pass_threshold: float,
+    domain: str,
+    sem: "asyncio.Semaphore",
+) -> List[MetricResult]:
+    """One combined judge call per conversation (token-optimized #1+#2).
+
+    Replaces the former per-turn hallucination/answer_relevancy/llm_judge plus the
+    per-conversation usefulness/completeness/cross_turn calls (~12 calls) with a single
+    call, while emitting the SAME MetricResult metric names so the aggregator/report/UI
+    are unchanged. Error turns are still recorded without an LLM call.
+    """
+    if not conv.turns:
+        return []
+    persona  = persona_map.get(conv.persona_id)
+    fishbone = persona.fishbone_dimensions if persona else {}
+    intent   = persona.intent.value if persona else "genuine"
+    local: List[MetricResult] = []
+
+    conversation_expected = conv.turns[0].expected_behavior or ""
+
+    # Error turns — recorded without an LLM call (unchanged behavior).
+    for turn in conv.turns:
+        if turn.is_error_response:
+            local.append(MetricResult(
+                conversation_id=conv.conversation_id, persona_id=conv.persona_id,
+                persona_name=conv.persona_name, intent=intent, fishbone=fishbone,
+                prompt=turn.query, response=turn.response[:2000],
+                latency_ms=conv.total_latency_ms, superset="functional",
+                turn_number=turn.turn_number, metric_name="error_response",
+                score=0.0, passed=False,
+                reason=f"Chatbot returned error: {turn.response[:200]}",
+            ))
+
+    good_turns = [t for t in conv.turns if not t.is_error_response]
+    if not good_turns:
+        return local
+    # Nothing to ask the judge for (enable_judge off AND no deepeval metrics selected).
+    if not (run_judge or active_deval):
+        return local
+
+    judge_turn = good_turns[-1]
+    expected   = judge_turn.expected_behavior or conversation_expected
+    is_rag     = bool(conv.turns[0].retrieved_context)
+    is_multi   = len(conv.turns) >= 2
+
+    transcript = ""
+    if is_multi:
+        transcript = "\n".join(
+            f"Turn {t.turn_number} Q: {t.query[:200]}\nTurn {t.turn_number} A: {t.response[:300]}"
+            for t in conv.turns
+        )
+
+    base_meta = dict(
+        conversation_id=conv.conversation_id, persona_id=conv.persona_id,
+        persona_name=conv.persona_name, intent=intent, fishbone=fishbone,
+        prompt=judge_turn.query, response=judge_turn.response[:2000],
+        latency_ms=conv.total_latency_ms, superset="functional",
+        turn_number=judge_turn.turn_number,
+    )
+
+    try:
+        async with sem:
+            J = await asyncio.wait_for(
+                _combined_functional_eval(
+                    judge_turn.query, judge_turn.response, expected, domain,
+                    judge_turn.retrieved_context, transcript, llm_client,
+                ),
+                timeout=120,
+            )
+    except Exception as e:
+        skip = f"Combined judge unavailable: {str(e)[:120]}"
+        names = []
+        if "hallucination" in active_deval:
+            names.append("hallucination")
+        if "answer_relevancy" in active_deval:
+            names.append("answer_relevancy")
+        if run_judge:
+            names += ["llm_relevance", "llm_accuracy", "llm_helpfulness", "usefulness"]
+        for nm in names:
+            local.append(MetricResult(**base_meta, metric_name=nm, score=0.0,
+                                      passed=False, reason="", skipped=True, skip_reason=skip))
+        return local
+
+    reason    = J["reasoning"]
+    hall_pass = 1.0 - THRESHOLDS["hallucination_max"]
+
+    if "hallucination" in active_deval:
+        s = J["factual_accuracy"]
+        local.append(MetricResult(**base_meta, metric_name="hallucination", score=s,
+                                  passed=s >= hall_pass,
+                                  reason=f"Factual accuracy {s:.3f} — {reason}"))
+    if "answer_relevancy" in active_deval:
+        s = J["answer_relevancy"]
+        local.append(MetricResult(**base_meta, metric_name="answer_relevancy", score=s,
+                                  passed=s >= pass_threshold, reason=reason))
+
+    if run_judge:
+        for key, mname in (("relevance", "llm_relevance"),
+                           ("accuracy", "llm_accuracy"),
+                           ("helpfulness", "llm_helpfulness")):
+            s = J[key]
+            local.append(MetricResult(**base_meta, metric_name=mname, score=s,
+                                      passed=s >= pass_threshold, reason=reason))
+        su = J["usefulness"]
+        local.append(MetricResult(**base_meta, metric_name="usefulness", score=su,
+                                  passed=su >= pass_threshold, reason=reason))
+
+        # Completeness + answer similarity — non-RAG with an expected behavior (same gate).
+        if (not is_rag) and expected:
+            for key, mname in (("completeness", "llm_completeness"),
+                               ("answer_similarity", "llm_answer_similarity")):
+                s = J[key]
+                local.append(MetricResult(**base_meta, metric_name=mname, score=s,
+                                          passed=s >= pass_threshold, reason=reason))
+
+        # Cross-turn consistency + context awareness — multi-turn only.
+        if is_multi:
+            cons = J["consistency"] if J["consistency"] is not None else 1.0
+            ctx  = J["context_awareness"] if J["context_awareness"] is not None else 0.5
+            ct_base = dict(
+                conversation_id=conv.conversation_id, persona_id=conv.persona_id,
+                persona_name=conv.persona_name, intent=intent, fishbone=fishbone,
+                prompt=transcript[:1000], response=reason,
+                latency_ms=conv.total_latency_ms, superset="functional",
+            )
+            local.append(MetricResult(**ct_base, metric_name="cross_turn_consistency",
+                                      score=cons, passed=cons >= pass_threshold,
+                                      reason=f"Cross-turn consistency: {cons:.3f} — {reason}"))
+            local.append(MetricResult(**ct_base, metric_name="cross_turn_context_awareness",
+                                      score=ctx, passed=ctx >= pass_threshold,
+                                      reason=f"Context awareness: {ctx:.3f} — {reason}"))
+
+    return local
+
+
 # ── Main evaluator ────────────────────────────────────────────────────────────
 
 async def evaluate_functional(
@@ -457,331 +705,17 @@ async def evaluate_functional(
     _DEVAL_TIMEOUT = 120  # seconds — hard ceiling per DeepEval call
 
     async def _eval_one(conv: Conversation) -> List[MetricResult]:
-        persona  = persona_map.get(conv.persona_id)
-        if not conv.turns:
-            return []
-
-        fishbone = persona.fishbone_dimensions if persona else {}
-        intent   = persona.intent.value if persona else "genuine"
-        local: List[MetricResult] = []
-
-        # ── Per-turn evaluation (Fix 10) ──────────────────────────────────────
-        # Evaluate every turn for hallucination + answer_relevancy.
-        # Also note the last turn for judge / completeness.
-        last_turn = conv.turns[-1]
-        # conversation_expected: fallback used only when a turn has no individual
-        # expected_behavior. Pre-crafted scenario turns (turns 2+) carry their own
-        # expected_behavior from multi_turn_scenario, so they use it directly.
-        # Dynamically-generated turns still fall back to turn 1's value.
-        conversation_expected = conv.turns[0].expected_behavior or ""
-
-        for turn in conv.turns:
-            query    = turn.query
-            response = turn.response
-            context  = turn.retrieved_context or []
-            # Per-turn expected_behavior takes priority; conversation_expected is fallback only
-            expected = turn.expected_behavior or conversation_expected
-
-            base_meta = dict(
-                conversation_id=conv.conversation_id,
-                persona_id=conv.persona_id,
-                persona_name=conv.persona_name,
-                intent=intent,
-                fishbone=fishbone,
-                prompt=query,
-                response=response[:2000],
-                latency_ms=conv.total_latency_ms,
-                superset="functional",
-                turn_number=turn.turn_number,
-            )
-
-            # Error responses — record and skip scoring
-            if turn.is_error_response:
-                local.append(MetricResult(
-                    **base_meta, metric_name="error_response",
-                    score=0.0, passed=False,
-                    reason=f"Chatbot returned error: {response[:200]}",
-                ))
-                continue
-
-            # ── Hallucination / Factual Accuracy (Fix 1 + Fix 36) ────────────
-            # Branch 1: RAG — use retrieved_context as reference (unchanged)
-            # Branch 2: Non-RAG with substantial expected_behavior (>=200 chars) — use as ref
-            # Branch 3: No substantial reference — GEval factual accuracy fallback
-            #   (uses LLM judge's domain knowledge; no reference document needed)
-            if "hallucination" in active_deval and deval_model:
-                if context:
-                    # Branch 1: RAG — retrieved context chunks as reference
-                    try:
-                        async with sem:
-                            hall_score, hall_reason = await asyncio.wait_for(
-                                loop.run_in_executor(
-                                    None, _deepeval_hallucination, query, response, context, deval_model,
-                                ),
-                                timeout=_DEVAL_TIMEOUT,
-                            )
-                        local.append(MetricResult(
-                            **base_meta, metric_name="hallucination",
-                            score=hall_score,
-                            passed=hall_score >= (1.0 - THRESHOLDS["hallucination_max"]),
-                            reason=f"{hall_reason} (ref: retrieved_context)",
-                        ))
-                    except Exception as e:
-                        local.append(MetricResult(
-                            **base_meta, metric_name="hallucination",
-                            score=0.0, passed=False,
-                            reason=f"DeepEval error: {str(e)[:120]}",
-                            skipped=True,
-                            skip_reason=f"DeepEval error: {str(e)[:120]}",
-                        ))
-
-                elif expected and _is_factual_reference(expected):
-                    # Branch 2: factual reference document (not a behavioral description)
-                    try:
-                        async with sem:
-                            hall_score, hall_reason = await asyncio.wait_for(
-                                loop.run_in_executor(
-                                    None, _deepeval_hallucination, query, response, [expected], deval_model,
-                                ),
-                                timeout=_DEVAL_TIMEOUT,
-                            )
-                        local.append(MetricResult(
-                            **base_meta, metric_name="hallucination",
-                            score=hall_score,
-                            passed=hall_score >= (1.0 - THRESHOLDS["hallucination_max"]),
-                            reason=f"{hall_reason} (ref: expected_behavior)",
-                        ))
-                    except Exception as e:
-                        local.append(MetricResult(
-                            **base_meta, metric_name="hallucination",
-                            score=0.0, passed=False,
-                            reason=f"DeepEval error: {str(e)[:120]}",
-                            skipped=True,
-                            skip_reason=f"DeepEval error: {str(e)[:120]}",
-                        ))
-
-                else:
-                    # Branch 3: no usable reference → GEval factual accuracy fallback.
-                    # Emitted under "hallucination" so the aggregator sees a consistent
-                    # metric name; reason text identifies the fallback method.
-                    # Behavioral descriptions ("should", "must") are NOT reference documents —
-                    # using them as DeepEval context causes false failures.
-                    try:
-                        async with sem:
-                            fact_score, fact_reason = await asyncio.wait_for(
-                                loop.run_in_executor(
-                                    None, _deepeval_geval_factual_accuracy, query, response, domain, deval_model,
-                                ),
-                                timeout=_DEVAL_TIMEOUT,
-                            )
-                        local.append(MetricResult(
-                            **base_meta, metric_name="hallucination",
-                            score=fact_score,
-                            passed=fact_score >= pass_threshold,
-                            reason=f"{fact_reason} (fallback: GEval factual accuracy — no reference document)",
-                        ))
-                    except Exception as e:
-                        local.append(MetricResult(
-                            **base_meta, metric_name="hallucination",
-                            score=0.0, passed=False,
-                            reason=f"GEval error: {str(e)[:120]}",
-                            skipped=True,
-                            skip_reason=f"GEval error: {str(e)[:120]}",
-                        ))
-
-            # ── Answer Relevancy (Fix 18 + Fix 36) ───────────────────────────
-            if "answer_relevancy" in active_deval and deval_model:
-                try:
-                    async with sem:
-                        rel_score, rel_reason = await asyncio.wait_for(
-                            loop.run_in_executor(
-                                None, _deepeval_answer_relevancy, query, response, deval_model,
-                            ),
-                            timeout=_DEVAL_TIMEOUT,
-                        )
-                    local.append(MetricResult(
-                        **base_meta, metric_name="answer_relevancy",
-                        score=rel_score,
-                        passed=rel_score >= pass_threshold,
-                        reason=rel_reason,
-                    ))
-                except Exception as e:
-                    local.append(MetricResult(
-                        **base_meta, metric_name="answer_relevancy",
-                        score=0.0, passed=False, reason="",
-                        skipped=True,
-                        skip_reason=f"DeepEval error: {str(e)[:120]}",
-                    ))
-
-            # ── LLM Judge per turn (relevance, accuracy, helpfulness) ────────
-            if run_judge:
-                async with sem:
-                    try:
-                        judge_result = await _llm_judge(
-                            query, response, expected, llm_client, criteria_text,
-                        )
-                    except Exception as e:
-                        local.append(MetricResult(
-                            **base_meta, metric_name="llm_judge",
-                            score=0.0, passed=False, reason="",
-                            skipped=True,
-                            skip_reason=f"LLM judge unavailable: {str(e)[:120]}",
-                        ))
-                        judge_result = None
-                if judge_result is not None:
-                    reasoning = judge_result.get("reasoning", "")
-                    skip_keys = {"overall", "reasoning"}
-                    for crit_key, crit_score in judge_result.items():
-                        if crit_key in skip_keys:
-                            continue
-                        try:
-                            s = float(crit_score)
-                        except (TypeError, ValueError):
-                            continue
-                        local.append(MetricResult(
-                            **base_meta, metric_name=f"llm_{crit_key}", score=s,
-                            passed=s >= pass_threshold, reason=reasoning,
-                        ))
-
-        # ── Usefulness — once per conversation (last turn, Fix 36) ───────────
-        if deval_model and not last_turn.is_error_response:
-            base_last = dict(
-                conversation_id=conv.conversation_id,
-                persona_id=conv.persona_id,
-                persona_name=conv.persona_name,
-                intent=intent,
-                fishbone=fishbone,
-                prompt=last_turn.query[:300],
-                response=last_turn.response[:2000],
-                latency_ms=conv.total_latency_ms,
-                superset="functional",
-                turn_number=last_turn.turn_number,
-            )
-            try:
-                async with sem:
-                    use_score, use_reason = await asyncio.wait_for(
-                        loop.run_in_executor(
-                            None, _deepeval_usefulness,
-                            last_turn.query, last_turn.response, deval_model,
-                            last_turn.expected_behavior or conversation_expected,
-                        ),
-                        timeout=_DEVAL_TIMEOUT,
-                    )
-                local.append(MetricResult(
-                    **base_last, metric_name="usefulness",
-                    score=use_score,
-                    passed=use_score >= pass_threshold,
-                    reason=use_reason,
-                ))
-            except Exception as e:
-                local.append(MetricResult(
-                    **base_last, metric_name="usefulness",
-                    score=0.0, passed=False, reason="",
-                    skipped=True,
-                    skip_reason=f"DeepEval GEval error: {str(e)[:120]}",
-                ))
-
-        # ── Completeness + Answer Similarity (Fix 11) ────────────────────────
-        # Only for non-RAG conversations where expected_behavior is available.
-        last_expected = last_turn.expected_behavior or conversation_expected
-        if (
-            run_judge
-            and not last_turn.is_error_response
-            and last_expected
-            and not (conv.turns[0].retrieved_context)   # non-RAG
-        ):
-            base_last = dict(
-                conversation_id=conv.conversation_id,
-                persona_id=conv.persona_id,
-                persona_name=conv.persona_name,
-                intent=intent,
-                fishbone=fishbone,
-                prompt=last_turn.query[:300],
-                response=last_turn.response[:2000],
-                latency_ms=conv.total_latency_ms,
-                superset="functional",
-                turn_number=last_turn.turn_number,
-            )
-            async with sem:
-                try:
-                    comp_result = await _llm_completeness(
-                        last_turn.query, last_turn.response, last_expected, llm_client,
-                    )
-                except Exception as e:
-                    for metric_key in ("completeness", "answer_similarity"):
-                        local.append(MetricResult(
-                            **base_last,
-                            metric_name=f"llm_{metric_key}",
-                            score=0.0, passed=False, reason="",
-                            skipped=True,
-                            skip_reason=f"Completeness check unavailable: {str(e)[:120]}",
-                        ))
-                    comp_result = None
-            if comp_result is not None:
-                comp_reason = comp_result.get("reasoning", "")
-                for metric_key in ("completeness", "answer_similarity"):
-                    score = comp_result.get(metric_key, 0.5)
-                    local.append(MetricResult(
-                        **base_last,
-                        metric_name=f"llm_{metric_key}",
-                        score=round(score, 4),
-                        passed=score >= pass_threshold,
-                        reason=comp_reason,
-                    ))
-
-        # ── Cross-turn consistency (Fix 10 + Fix 6) ──────────────────────────
-        # Fix 6: stores full transcript in prompt, judge reasoning in response
-        # so every row is verifiable (no more "[multi-turn: N turns]" placeholder).
-        if run_judge and len(conv.turns) >= 2:
-            async with sem:
-                try:
-                    ct_result = await _cross_turn_consistency(conv, llm_client)
-                except Exception as e:
-                    local.append(MetricResult(
-                        conversation_id=conv.conversation_id,
-                        persona_id=conv.persona_id,
-                        persona_name=conv.persona_name,
-                        intent=intent,
-                        fishbone=fishbone,
-                        prompt=f"[multi-turn: {len(conv.turns)} turns]",
-                        response="",
-                        latency_ms=conv.total_latency_ms,
-                        superset="functional",
-                        metric_name="cross_turn_consistency",
-                        score=0.0, passed=False, reason="",
-                        skipped=True,
-                        skip_reason=f"Consistency check unavailable: {str(e)[:120]}",
-                    ))
-                    ct_result = None
-            if ct_result is not None:
-                consistency, context_awareness, ct_reasoning, turns_text = ct_result
-                _ct_base = dict(
-                    conversation_id=conv.conversation_id,
-                    persona_id=conv.persona_id,
-                    persona_name=conv.persona_name,
-                    intent=intent,
-                    fishbone=fishbone,
-                    prompt=turns_text[:1000],
-                    response=ct_reasoning,
-                    latency_ms=conv.total_latency_ms,
-                    superset="functional",
-                )
-                local.append(MetricResult(
-                    **_ct_base,
-                    metric_name="cross_turn_consistency",
-                    score=round(consistency, 4),
-                    passed=consistency >= pass_threshold,
-                    reason=f"Cross-turn consistency: {consistency:.3f} — {ct_reasoning}",
-                ))
-                local.append(MetricResult(
-                    **_ct_base,
-                    metric_name="cross_turn_context_awareness",
-                    score=round(context_awareness, 4),
-                    passed=context_awareness >= pass_threshold,
-                    reason=f"Context awareness: {context_awareness:.3f} — {ct_reasoning}",
-                ))
-
-        return local
+        # #1+#2: one combined judge call per conversation (see _eval_functional_conv).
+        return await _eval_functional_conv(
+            conv,
+            persona_map=persona_map,
+            llm_client=llm_client,
+            run_judge=run_judge,
+            active_deval=active_deval,
+            pass_threshold=pass_threshold,
+            domain=domain,
+            sem=sem,
+        )
 
     batches = await asyncio.gather(*[_eval_one(c) for c in func_convs])
     for batch in batches:

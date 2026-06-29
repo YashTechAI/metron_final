@@ -182,6 +182,86 @@ def _run_deepeval_geval(
     return {"scores": scores, "overall": overall, "method": "deepeval_geval"}
 
 
+# ── Combined quality judge (token optimization #3) ────────────────────────────
+# One LLM call scores ALL criteria at once, replacing the former one-GEval-call-per-
+# criterion loop (num_criteria calls → 1 per conversation). Same output shape.
+
+_COMBINED_QUALITY_PROMPT = """
+You are evaluating an AI assistant's response against domain-specific quality criteria.
+Score EACH criterion from 0.0 to 1.0 (1.0 = fully meets the criterion). Judge only from
+the evidence below.
+
+USER QUESTION:
+{question}
+
+AI RESPONSE:
+{response}
+
+CRITERIA (name: what it measures):
+{criteria_block}
+
+Return ONLY this JSON (a score for every criterion name above):
+{{
+  "scores": {{ {example} }},
+  "reasoning": "<1-2 sentences>"
+}}
+"""
+
+
+async def _combined_quality_geval(
+    question: str,
+    response: str,
+    criteria: list,
+    criteria_weights: dict,
+    llm_client,
+) -> dict:
+    """One judge call scoring all (non-skipped) criteria. Returns the same shape as
+    _run_deepeval_geval: {"scores": {name: score}, "overall": <weighted>, "method": ...}.
+    Raises if no criteria remain or the call fails."""
+    active = []
+    for criterion in criteria:
+        name        = criterion.get("name", "quality")
+        description = criterion.get("description", name)
+        if _should_skip_criterion(question, description, name):
+            continue
+        active.append((name, description))
+
+    if not active:
+        raise RuntimeError("GEval returned no scores (all criteria skipped)")
+
+    criteria_block = "\n".join(f'- "{n}": {d}' for n, d in active)[:2500]
+    example = ", ".join(f'"{n}": <0.0-1.0>' for n, _ in active[:3])
+    prompt = _COMBINED_QUALITY_PROMPT.format(
+        question=question[:400], response=response[:2000],
+        criteria_block=criteria_block, example=example,
+    )
+    data = await llm_client.complete_json(
+        prompt, temperature=0.1, max_tokens=600, task="judge", retries=2,
+    )
+    raw = data.get("scores", {}) if isinstance(data, dict) else {}
+    if not isinstance(raw, dict):
+        raw = {}
+
+    scores: dict[str, float] = {}
+    for name, _ in active:
+        v = raw.get(name)
+        try:
+            scores[name] = round(float(v), 4)
+        except (TypeError, ValueError):
+            scores[name] = 0.5   # judge omitted this criterion — neutral score
+
+    total_weight = 0.0
+    weighted_sum = 0.0
+    for name, score in scores.items():
+        w = criteria_weights.get(name, 1.0)
+        weighted_sum += score * w
+        total_weight  += w
+    overall = round(weighted_sum / total_weight, 4) if total_weight > 0 else round(
+        sum(scores.values()) / len(scores), 4
+    )
+    return {"scores": scores, "overall": overall, "method": "combined_rubric"}
+
+
 # ── Main evaluator ────────────────────────────────────────────────────────────
 
 async def evaluate_quality(
@@ -270,11 +350,11 @@ async def evaluate_quality(
         if effective_criteria and getattr(config, "use_geval", True):
             async with sem:
                 try:
+                    # #3: one combined judge call for ALL criteria (was one GEval per criterion).
                     geval_result = await asyncio.wait_for(
-                        loop.run_in_executor(
-                            None, _run_deepeval_geval,
+                        _combined_quality_geval(
                             last_turn.query, last_turn.response,
-                            effective_criteria, criteria_weights, deval_model
+                            effective_criteria, criteria_weights, llm_client,
                         ),
                         timeout=_DEVAL_TIMEOUT,
                     )
