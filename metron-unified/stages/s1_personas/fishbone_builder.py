@@ -128,7 +128,11 @@ def build_slots(profile: AppProfile, num_personas: int = 6, include_adversarial:
             "goal_type":     uc,
         })
 
-    # Trim or pad to num_personas
+    # Normalize to EXACTLY num_personas. Trim if we built too many (keeping an
+    # adversarial quota when security is selected), then PAD if too few. The block
+    # previously only trimmed, so a profile with few user_types/use_cases, a run
+    # without security, or an adversarial-heavy trim returned < num_personas
+    # (e.g. selecting 5 personas but only 4 generated).
     if len(slots) > num_personas:
         genuine     = [s for s in slots if s["intent"] == "genuine"]
         adversarial = [s for s in slots if s["intent"] == "adversarial"]
@@ -136,10 +140,22 @@ def build_slots(profile: AppProfile, num_personas: int = 6, include_adversarial:
         # Keep adversarial slots only when security is selected.
         # When include_adversarial=False, adversarial_count is already 0 so
         # adversarial list is empty — adv_keep stays [] naturally.
-        adv_keep  = adversarial[:max(2, num_personas // 3)] if include_adversarial else []
+        adv_keep  = (adversarial[:max(2, num_personas // 3)] if include_adversarial else [])[:num_personas]
         remaining = num_personas - len(adv_keep)
         others    = (genuine + edge)[:remaining]
         slots     = others + adv_keep
+
+    # Pad with diverse genuine slots if still short of the requested count.
+    pad_i = 0
+    while len(slots) < num_personas:
+        slots.append({
+            "user_type":      user_types[pad_i % len(user_types)],
+            "expertise":      EXPERTISE_LEVELS[pad_i % len(EXPERTISE_LEVELS)],
+            "emotional_state": EMOTIONAL_STATES[pad_i % len(EMOTIONAL_STATES)],
+            "intent":         "genuine",
+            "goal_type":      use_cases[pad_i % len(use_cases)],
+        })
+        pad_i += 1
 
     return slots
 

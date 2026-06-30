@@ -45,7 +45,7 @@ _FULL_J = {
 
 
 class TestFunctionalCombined:
-    def test_one_call_and_all_metric_names(self):
+    def test_per_turn_rows_and_metric_names(self):
         llm = MagicMock()
         llm.complete_json = AsyncMock(return_value=dict(_FULL_J))
         conv = _conv([_turn(1, "Q1", "A1", expected="exp1"), _turn(2, "Q2", "A2")])
@@ -60,8 +60,8 @@ class TestFunctionalCombined:
 
         results = _run(go())
 
-        # The whole point of #1+#2: exactly ONE judge call for the conversation.
-        assert llm.complete_json.call_count == 1
+        # #1: ONE combined call PER TURN (3 metrics folded into 1 call) — 2 turns → 2 calls.
+        assert llm.complete_json.call_count == 2
 
         names = {r.metric_name for r in results}
         assert names == {
@@ -70,6 +70,15 @@ class TestFunctionalCombined:
             "llm_completeness", "llm_answer_similarity",
             "cross_turn_consistency", "cross_turn_context_awareness",
         }
+
+        # Per-turn metrics emit one row PER TURN (counts restored); per-conversation metrics once.
+        counts = {}
+        for r in results:
+            counts[r.metric_name] = counts.get(r.metric_name, 0) + 1
+        assert counts["hallucination"] == 2 and counts["answer_relevancy"] == 2
+        assert counts["llm_relevance"] == 2
+        assert counts["usefulness"] == 1
+        assert counts["cross_turn_consistency"] == 1
 
         by = {r.metric_name: r for r in results}
         assert by["hallucination"].score == 0.90 and by["hallucination"].passed is True

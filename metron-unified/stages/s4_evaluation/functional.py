@@ -524,12 +524,13 @@ async def _eval_functional_conv(
     domain: str,
     sem: "asyncio.Semaphore",
 ) -> List[MetricResult]:
-    """One combined judge call per conversation (token-optimized #1+#2).
+    """Per-turn functional scoring via ONE combined judge call per turn (token-optimized #1).
 
-    Replaces the former per-turn hallucination/answer_relevancy/llm_judge plus the
-    per-conversation usefulness/completeness/cross_turn calls (~12 calls) with a single
-    call, while emitting the SAME MetricResult metric names so the aggregator/report/UI
-    are unchanged. Error turns are still recorded without an LLM call.
+    Restores the original per-turn rows — hallucination / answer_relevancy / llm_* are emitted
+    for EVERY turn — but each turn now uses a single combined judge call instead of 3 separate
+    DeepEval/LLM calls (~3x fewer calls). The per-conversation metrics (usefulness, completeness,
+    cross-turn) are computed once from the last turn's result. Same MetricResult metric names as
+    the original. Error turns are recorded without an LLM call.
     """
     if not conv.turns:
         return []
@@ -560,97 +561,121 @@ async def _eval_functional_conv(
     if not (run_judge or active_deval):
         return local
 
-    judge_turn = good_turns[-1]
-    expected   = judge_turn.expected_behavior or conversation_expected
-    is_rag     = bool(conv.turns[0].retrieved_context)
-    is_multi   = len(conv.turns) >= 2
+    is_rag    = bool(conv.turns[0].retrieved_context)
+    is_multi  = len(conv.turns) >= 2
+    hall_pass = 1.0 - THRESHOLDS["hallucination_max"]
 
-    transcript = ""
+    full_transcript = ""
     if is_multi:
-        transcript = "\n".join(
+        full_transcript = "\n".join(
             f"Turn {t.turn_number} Q: {t.query[:200]}\nTurn {t.turn_number} A: {t.response[:300]}"
             for t in conv.turns
         )
 
-    base_meta = dict(
-        conversation_id=conv.conversation_id, persona_id=conv.persona_id,
-        persona_name=conv.persona_name, intent=intent, fishbone=fishbone,
-        prompt=judge_turn.query, response=judge_turn.response[:2000],
-        latency_ms=conv.total_latency_ms, superset="functional",
-        turn_number=judge_turn.turn_number,
-    )
+    last_i = len(good_turns) - 1
+    last_J = None
 
-    try:
-        async with sem:
-            J = await asyncio.wait_for(
-                _combined_functional_eval(
-                    judge_turn.query, judge_turn.response, expected, domain,
-                    judge_turn.retrieved_context, transcript, llm_client,
-                ),
-                timeout=120,
-            )
-    except Exception as e:
-        skip = f"Combined judge unavailable: {str(e)[:120]}"
-        names = []
+    # ── Per-turn scoring: ONE combined judge call per turn ───────────────────────
+    for i, turn in enumerate(good_turns):
+        is_last  = (i == last_i)
+        expected = turn.expected_behavior or conversation_expected
+        # The transcript only feeds the conversation-level consistency check (last turn).
+        transcript = full_transcript if is_last else ""
+
+        base_meta = dict(
+            conversation_id=conv.conversation_id, persona_id=conv.persona_id,
+            persona_name=conv.persona_name, intent=intent, fishbone=fishbone,
+            prompt=turn.query, response=turn.response[:2000],
+            latency_ms=conv.total_latency_ms, superset="functional",
+            turn_number=turn.turn_number,
+        )
+
+        try:
+            async with sem:
+                J = await asyncio.wait_for(
+                    _combined_functional_eval(
+                        turn.query, turn.response, expected, domain,
+                        turn.retrieved_context, transcript, llm_client,
+                    ),
+                    timeout=120,
+                )
+        except Exception as e:
+            skip = f"Combined judge unavailable: {str(e)[:120]}"
+            names = []
+            if "hallucination" in active_deval:
+                names.append("hallucination")
+            if "answer_relevancy" in active_deval:
+                names.append("answer_relevancy")
+            if run_judge:
+                names += ["llm_relevance", "llm_accuracy", "llm_helpfulness"]
+            for nm in names:
+                local.append(MetricResult(**base_meta, metric_name=nm, score=0.0,
+                                          passed=False, reason="", skipped=True, skip_reason=skip))
+            continue
+
+        if is_last:
+            last_J = J
+        reason = J["reasoning"]
+
         if "hallucination" in active_deval:
-            names.append("hallucination")
+            s = J["factual_accuracy"]
+            local.append(MetricResult(**base_meta, metric_name="hallucination", score=s,
+                                      passed=s >= hall_pass,
+                                      reason=f"Factual accuracy {s:.3f} — {reason}"))
         if "answer_relevancy" in active_deval:
-            names.append("answer_relevancy")
-        if run_judge:
-            names += ["llm_relevance", "llm_accuracy", "llm_helpfulness", "usefulness"]
-        for nm in names:
-            local.append(MetricResult(**base_meta, metric_name=nm, score=0.0,
-                                      passed=False, reason="", skipped=True, skip_reason=skip))
-        return local
-
-    reason    = J["reasoning"]
-    hall_pass = 1.0 - THRESHOLDS["hallucination_max"]
-
-    if "hallucination" in active_deval:
-        s = J["factual_accuracy"]
-        local.append(MetricResult(**base_meta, metric_name="hallucination", score=s,
-                                  passed=s >= hall_pass,
-                                  reason=f"Factual accuracy {s:.3f} — {reason}"))
-    if "answer_relevancy" in active_deval:
-        s = J["answer_relevancy"]
-        local.append(MetricResult(**base_meta, metric_name="answer_relevancy", score=s,
-                                  passed=s >= pass_threshold, reason=reason))
-
-    if run_judge:
-        for key, mname in (("relevance", "llm_relevance"),
-                           ("accuracy", "llm_accuracy"),
-                           ("helpfulness", "llm_helpfulness")):
-            s = J[key]
-            local.append(MetricResult(**base_meta, metric_name=mname, score=s,
+            s = J["answer_relevancy"]
+            local.append(MetricResult(**base_meta, metric_name="answer_relevancy", score=s,
                                       passed=s >= pass_threshold, reason=reason))
-        su = J["usefulness"]
-        local.append(MetricResult(**base_meta, metric_name="usefulness", score=su,
-                                  passed=su >= pass_threshold, reason=reason))
-
-        # Completeness + answer similarity — non-RAG with an expected behavior (same gate).
-        if (not is_rag) and expected:
-            for key, mname in (("completeness", "llm_completeness"),
-                               ("answer_similarity", "llm_answer_similarity")):
+        if run_judge:
+            for key, mname in (("relevance", "llm_relevance"),
+                               ("accuracy", "llm_accuracy"),
+                               ("helpfulness", "llm_helpfulness")):
                 s = J[key]
                 local.append(MetricResult(**base_meta, metric_name=mname, score=s,
                                           passed=s >= pass_threshold, reason=reason))
 
-        # Cross-turn consistency + context awareness — multi-turn only.
-        if is_multi:
-            cons = J["consistency"] if J["consistency"] is not None else 1.0
-            ctx  = J["context_awareness"] if J["context_awareness"] is not None else 0.5
-            ct_base = dict(
-                conversation_id=conv.conversation_id, persona_id=conv.persona_id,
-                persona_name=conv.persona_name, intent=intent, fishbone=fishbone,
-                prompt=transcript[:1000], response=reason,
-                latency_ms=conv.total_latency_ms, superset="functional",
-            )
-            local.append(MetricResult(**ct_base, metric_name="cross_turn_consistency",
-                                      score=cons, passed=cons >= pass_threshold,
-                                      reason=f"Cross-turn consistency: {cons:.3f} — {reason}"))
-            local.append(MetricResult(**ct_base, metric_name="cross_turn_context_awareness",
-                                      score=ctx, passed=ctx >= pass_threshold,
-                                      reason=f"Context awareness: {ctx:.3f} — {reason}"))
+    # ── Per-conversation metrics — computed once from the last turn's result ─────
+    if last_J is not None:
+        last_turn     = good_turns[-1]
+        reason        = last_J["reasoning"]
+        last_expected = last_turn.expected_behavior or conversation_expected
+        base_last = dict(
+            conversation_id=conv.conversation_id, persona_id=conv.persona_id,
+            persona_name=conv.persona_name, intent=intent, fishbone=fishbone,
+            prompt=last_turn.query, response=last_turn.response[:2000],
+            latency_ms=conv.total_latency_ms, superset="functional",
+            turn_number=last_turn.turn_number,
+        )
+
+        # Usefulness — emitted whenever a judge ran (matches original gating).
+        su = last_J["usefulness"]
+        local.append(MetricResult(**base_last, metric_name="usefulness", score=su,
+                                  passed=su >= pass_threshold, reason=reason))
+
+        if run_judge:
+            # Completeness + answer similarity — non-RAG with an expected behavior.
+            if (not is_rag) and last_expected:
+                for key, mname in (("completeness", "llm_completeness"),
+                                   ("answer_similarity", "llm_answer_similarity")):
+                    s = last_J[key]
+                    local.append(MetricResult(**base_last, metric_name=mname, score=s,
+                                              passed=s >= pass_threshold, reason=reason))
+            # Cross-turn consistency + context awareness — multi-turn only.
+            if is_multi:
+                cons = last_J["consistency"] if last_J["consistency"] is not None else 1.0
+                ctx  = last_J["context_awareness"] if last_J["context_awareness"] is not None else 0.5
+                ct_base = dict(
+                    conversation_id=conv.conversation_id, persona_id=conv.persona_id,
+                    persona_name=conv.persona_name, intent=intent, fishbone=fishbone,
+                    prompt=full_transcript[:1000], response=reason,
+                    latency_ms=conv.total_latency_ms, superset="functional",
+                )
+                local.append(MetricResult(**ct_base, metric_name="cross_turn_consistency",
+                                          score=cons, passed=cons >= pass_threshold,
+                                          reason=f"Cross-turn consistency: {cons:.3f} — {reason}"))
+                local.append(MetricResult(**ct_base, metric_name="cross_turn_context_awareness",
+                                          score=ctx, passed=ctx >= pass_threshold,
+                                          reason=f"Context awareness: {ctx:.3f} — {reason}"))
 
     return local
 
@@ -705,7 +730,7 @@ async def evaluate_functional(
     _DEVAL_TIMEOUT = 120  # seconds — hard ceiling per DeepEval call
 
     async def _eval_one(conv: Conversation) -> List[MetricResult]:
-        # #1+#2: one combined judge call per conversation (see _eval_functional_conv).
+        # #1: one combined judge call per turn (3 metrics folded into 1) — see _eval_functional_conv.
         return await _eval_functional_conv(
             conv,
             persona_map=persona_map,
