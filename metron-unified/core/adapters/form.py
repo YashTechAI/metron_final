@@ -26,6 +26,7 @@ class FormAdapter(_SessionMixin):
         request_template:     Optional[str] = None,
         response_trim_marker: Optional[str] = None,
         persistent_session:   bool = False,
+        injected_token:       str = "",
     ):
         self.endpoint_url         = endpoint_url
         self.request_field        = request_field
@@ -33,6 +34,8 @@ class FormAdapter(_SessionMixin):
         self.timeout              = timeout
         self.request_template     = request_template
         self.response_trim_marker = response_trim_marker
+        # Server-set caller JWT for {{token}} in the request template (NIA A2A mode).
+        self.injected_token       = injected_token
         self._init_session(persistent_session)
         # Use JSON content-type when template is set, form-encoded otherwise
         content_type = "application/json" if request_template else "application/x-www-form-urlencoded"
@@ -48,6 +51,7 @@ class FormAdapter(_SessionMixin):
                 .replace("{{query}}", escaped)
                 .replace("{{uuid}}", str(_uuid_mod.uuid4()))
                 .replace("{{conversation_id}}", conversation_id or str(_uuid_mod.uuid4()))
+                .replace("{{token}}", self.injected_token or "")
             )
             return json.loads(body_str), True  # (payload_dict, is_json)
         return {self.request_field: message}, False
@@ -102,6 +106,12 @@ class FormAdapter(_SessionMixin):
         for p in parts:
             if isinstance(result, dict) and p in result:
                 result = result[p]
+            elif isinstance(result, list) and p.isdigit():
+                # List-index path segment (e.g. A2A result.artifacts.0.parts.0.text).
+                idx = int(p)
+                result = result[idx] if 0 <= idx < len(result) else None
+                if result is None:
+                    return f"[Index '{p}' out of bounds]"
             else:
                 return f"[Field '{p}' not found]"
         return str(result) if result else "[Empty response]"

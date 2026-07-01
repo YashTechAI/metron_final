@@ -220,9 +220,7 @@ export default function PreviewPage() {
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6 text-sm">
             <div className="space-y-2">
               <SummaryRow label="Endpoint" value={cfg.endpoint_url as string} mono />
-              <SummaryRow label="Auth" value={cfg.auth_type === "bearer" ? "Bearer Token" : "None"} />
-              <SummaryRow label="Request Field" value={cfg.request_field as string} mono />
-              <SummaryRow label="Response Field" value={cfg.response_field as string} mono />
+              <SummaryRow label="Target config" value="Preconfigured (NIA agent)" />
             </div>
             <div className="space-y-2">
               <SummaryRow label="Agent" value={(cfg.agent_name as string) || "—"} />

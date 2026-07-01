@@ -794,6 +794,7 @@ async def run_pipeline(
             _cost_usd    = llm_client._token_totals["cost_usd"]
             _retry_count = llm_client._token_totals["retry_count"]
             _truncated   = llm_client._token_totals["truncated_calls"]
+            _cached      = llm_client._token_totals.get("cached", 0)
             _duration_s  = time.monotonic() - llm_client._pipeline_start
 
             # Build summary from Python accumulators — always available regardless of MLflow
@@ -810,6 +811,8 @@ async def run_pipeline(
                 "retry_count":             _retry_count,
                 "truncated_calls":         _truncated,
                 "truncation_rate":         round(_truncated / _calls, 4) if _calls else 0.0,
+                "cached_tokens":           _cached,
+                "cache_hit_rate":          round(_cached / _prompt, 4) if _prompt else 0.0,
                 "models_used":             dict(llm_client._models_used),
                 "by_stage":                dict(llm_client._stage_totals),
             }

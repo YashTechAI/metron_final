@@ -97,6 +97,9 @@ def _get_adapter(config: RunConfig) -> object:
         timeout=getattr(config, "adapter_timeout", 60),
         request_template=getattr(config, "request_template", None),
         response_trim_marker=getattr(config, "response_trim_marker", None),
+        # Caller JWT injected into {{token}} in the request template (NIA A2A mode).
+        # All adapters accept this, so the fixed A2A envelope works for any agent type.
+        injected_token=getattr(config, "injected_token", ""),
     )
     if config.application_type == ApplicationType.RAG:
         # RAG is single-turn (the loop breaks after turn 1), so no persistent session.
@@ -385,6 +388,7 @@ async def run_ground_truth_conversations(
         timeout=getattr(config, "adapter_timeout", 60),
         request_template=getattr(config, "request_template", None),
         response_trim_marker=getattr(config, "response_trim_marker", None),
+        injected_token=getattr(config, "injected_token", ""),
     )
 
     sem = asyncio.Semaphore(3)

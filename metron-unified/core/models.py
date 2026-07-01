@@ -310,6 +310,11 @@ class RunConfig(BaseModel):
     # Everything at and after the marker is discarded before evaluation.
     response_trim_marker: Optional[str] = None
 
+    # Caller's JWT (Authorization header, marker stripped) injected into the A2A
+    # request body's {{token}} placeholder at send-time. SERVER-SET by /api/run
+    # (NIA agent mode); excluded from serialization so it never persists to DB/logs.
+    injected_token: str = Field(default="", exclude=True)
+
     # ── Email notifications ───────────────────────────────────────────────────
     # If True, send the user an email when the run completes or fails.
     notify_email: bool = False

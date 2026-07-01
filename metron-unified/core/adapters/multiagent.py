@@ -35,6 +35,7 @@ class MultiAgentAdapter(_SessionMixin):
         request_template:     Optional[str] = None,
         response_trim_marker: Optional[str] = None,
         persistent_session:   bool = False,
+        injected_token:       str = "",
     ):
         self.endpoint_url         = endpoint_url
         self.request_field        = request_field
@@ -42,6 +43,8 @@ class MultiAgentAdapter(_SessionMixin):
         self.timeout              = timeout
         self.request_template     = request_template
         self.response_trim_marker = response_trim_marker
+        # Server-set caller JWT for {{token}} in the request template (NIA A2A mode).
+        self.injected_token       = injected_token
         self._init_session(persistent_session)
         self.headers: Dict[str, str] = {"Content-Type": "application/json"}
         if auth_type == "bearer" and auth_token:
@@ -55,6 +58,7 @@ class MultiAgentAdapter(_SessionMixin):
                 .replace("{{query}}", escaped)
                 .replace("{{uuid}}", str(_uuid_mod.uuid4()))
                 .replace("{{conversation_id}}", conversation_id or str(_uuid_mod.uuid4()))
+                .replace("{{token}}", self.injected_token or "")
             )
             return json.loads(body_str)
         return {self.request_field: message}

@@ -126,11 +126,16 @@ def get_current_user(request: Request) -> dict:
     development (never set this in production).
     """
     if os.environ.get("METRON_AUTH_BYPASS", "").strip() == "1":
+        # For local testing against a real A2A agent, paste a valid token into
+        # METRON_DEV_AGENT_TOKEN (.env). The marker is stripped if present, so you can
+        # paste the full gateway token or the bare JWT. Empty → A2A targets reject it.
+        dev_token = os.environ.get("METRON_DEV_AGENT_TOKEN", "").split(_TOKEN_MARKER, 1)[0].strip()
         return {
             "email": "dev@local.test",
             "role": _FULL_ACCESS_ROLE,
             # Optional dev org for exercising the NIA dynamic-config path locally.
             "organization_id": os.environ.get("METRON_DEV_ORG_ID", ""),
+            "access_token": dev_token,
         }
 
     auth_header = request.headers.get("Authorization", "")
@@ -144,4 +149,7 @@ def get_current_user(request: Request) -> dict:
 
     # Full permission for everyone — no DB lookup, no role/tenant restriction.
     user["role"] = _FULL_ACCESS_ROLE
+    # Expose the clean (marker-stripped) JWT so NIA A2A targets can be called with
+    # the caller's identity — injected into the request body, never persisted.
+    user["access_token"] = token
     return user

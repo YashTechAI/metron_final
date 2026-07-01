@@ -166,8 +166,9 @@ class LLMClient:
             "prompt": 0, "completion": 0, "calls": 0,
             "cost_usd": 0.0, "latency_ms": 0.0,
             "retry_count": 0, "truncated_calls": 0,
+            "cached": 0,   # prompt tokens served from the provider's prompt cache
         }
-        self._stage_totals: dict = {}   # stage → {calls, total_tokens, cost_usd}
+        self._stage_totals: dict = {}   # stage → {calls, total_tokens, cost_usd, cached}
         self._models_used: dict = {}    # model_name → call count
         self._pipeline_start: float = time.monotonic()
         # Guards the counters above. They are mutated both from the event loop
@@ -184,8 +185,15 @@ class LLMClient:
         temperature: float = 0.7,
         max_tokens: int = 0,
         task: str = "balanced",   # fast | judge | balanced
+        cache_prefix: str = "",   # large REPEATED block to serve from the prompt cache
     ) -> str:
-        """Complete a prompt. Returns raw text. Auto-fallback on rate limit."""
+        """Complete a prompt. Returns raw text. Auto-fallback on rate limit.
+
+        cache_prefix: a big block that repeats across many calls (e.g. the failure
+        taxonomy, a scoring rubric). It is sent as a stable leading system block so the
+        provider serves it from its prompt cache on later calls — far cheaper. Leave
+        empty for one-off prompts where caching gives nothing.
+        """
         if max_tokens == 0:
             max_tokens = get_token_budget(self.provider_name,
                                           "large" if len(prompt) > 2000 else "normal")
@@ -223,7 +231,7 @@ class LLMClient:
                         self._tpm_window.append((time.monotonic(), max_tokens))
 
                     await self.rate_limiter.wait()
-                    result = await self._call(model, prompt, system, temperature, max_tokens)
+                    result = await self._call(model, prompt, system, temperature, max_tokens, cache_prefix)
                     return result
                 except litellm.exceptions.RateLimitError as e:
                     last_error = e
@@ -272,6 +280,7 @@ class LLMClient:
         max_tokens: int = 0,
         task: str = "balanced",
         retries: int = 3,
+        cache_prefix: str = "",   # large REPEATED block to serve from the prompt cache
     ) -> Any:
         """Complete and parse JSON. Retries with clarifying instructions on parse failure."""
         for attempt in range(retries):
@@ -279,6 +288,7 @@ class LLMClient:
             raw = await self.complete(
                 prompt + suffix, system=system,
                 temperature=temperature, max_tokens=max_tokens, task=task,
+                cache_prefix=cache_prefix,
             )
             parsed = self._extract_json(raw)
             if parsed is not None:
@@ -299,11 +309,43 @@ class LLMClient:
                 return bool(env_key and os.environ.get(env_key))
         return False
 
+    # Providers where litellm turns a `cache_control` marker into REAL prompt caching:
+    #   anthropic / bedrock  → Anthropic-style ephemeral cache blocks
+    #   gemini / vertex_ai   → litellm creates a Gemini CachedContent (explicit context
+    #                          caching) and references it — this is the reliable path,
+    #                          NOT best-effort implicit caching. Requires the cached block
+    #                          to be ≥1024 tokens (litellm skips below that).
+    # OpenAI/Azure cache a long stable prefix automatically, so no marker is needed there.
+    _EXPLICIT_CACHE_PREFIXES = frozenset({"anthropic", "bedrock", "gemini", "vertex_ai"})
+    _GEMINI_CACHE_PREFIXES = frozenset({"gemini", "vertex_ai"})
+
     async def _call(
         self, model: str, prompt: str, system: str,
-        temperature: float, max_tokens: int,
+        temperature: float, max_tokens: int, cache_prefix: str = "",
     ) -> str:
+        prefix = model.split("/")[0] if "/" in model else ""
+
         messages = []
+        # cache_prefix is the large, REPEATED block (instructions, taxonomy, criteria).
+        # Placing it first as a system message lets the provider serve it from cache on
+        # subsequent calls. For providers that support an explicit marker we attach
+        # cache_control (Gemini also gets a TTL); OpenAI/Azure cache the prefix implicitly.
+        cache_on = os.environ.get("METRON_PROMPT_CACHE", "1").strip().lower() not in ("0", "false", "no", "off")
+        if cache_prefix:
+            if cache_on and prefix in self._EXPLICIT_CACHE_PREFIXES:
+                cache_control: dict[str, Any] = {"type": "ephemeral"}
+                if prefix in self._GEMINI_CACHE_PREFIXES:
+                    # Gemini needs an explicit TTL (format "<seconds>s"); default 30 min so
+                    # the cache outlives a single pipeline run without lingering for hours.
+                    cache_control["ttl"] = os.environ.get("METRON_PROMPT_CACHE_TTL", "1800s")
+                messages.append({
+                    "role": "system",
+                    "content": [
+                        {"type": "text", "text": cache_prefix, "cache_control": cache_control},
+                    ],
+                })
+            else:
+                messages.append({"role": "system", "content": cache_prefix})
         if system:
             messages.append({"role": "system", "content": system})
         messages.append({"role": "user", "content": prompt})
@@ -315,8 +357,7 @@ class LLMClient:
             "max_tokens": max_tokens,
         }
 
-        # Inject API key / endpoint based on provider
-        prefix = model.split("/")[0] if "/" in model else ""
+        # Inject API key / endpoint based on provider (prefix computed above)
         if prefix == "nvidia_nim":
             kwargs["api_key"] = self.api_key or os.environ.get("NVIDIA_NIM_API_KEY", "")
             kwargs["api_base"] = "https://integrate.api.nvidia.com/v1"
@@ -372,23 +413,36 @@ class LLMClient:
         if usage:
             p = int(getattr(usage, "prompt_tokens", 0) or 0)
             c = int(getattr(usage, "completion_tokens", 0) or 0)
+            # Cached prompt tokens (served from the provider's prompt cache at a steep
+            # discount). OpenAI-compatible location: usage.prompt_tokens_details.cached_tokens.
+            cached = 0
+            _ptd = getattr(usage, "prompt_tokens_details", None)
+            if _ptd is not None:
+                cached = int(getattr(_ptd, "cached_tokens", 0) or 0)
             try:
+                # completion_cost reads the cached-token details from the response, so the
+                # returned cost already reflects the prompt-cache discount.
                 cost = float(litellm.completion_cost(completion_response=response, model=model))
             except Exception:
                 cost = 0.0
             self._accumulate(model, p, c, cost, _latency_ms, self._current_stage,
-                             truncated=(_finish_reason == "length"))
+                             truncated=(_finish_reason == "length"), cached_tokens=cached)
 
         return response.choices[0].message.content or ""
 
     def _accumulate(
         self, model: str, prompt_tokens: int, completion_tokens: int,
         cost_usd: float, latency_ms: float, stage: str, truncated: bool = False,
+        cached_tokens: int = 0,
     ) -> None:
         """Thread-safe accumulation of one LLM call's usage into the run counters.
 
         Safe to call from the event loop (LLMClient._call) or from worker threads
         (the DeepEval judge wrappers, via record_external_usage).
+
+        `cached_tokens` is the portion of prompt_tokens the provider served from its
+        prompt cache (read from usage.prompt_tokens_details.cached_tokens). Tracked so
+        the LLMOps view can show cache hit-rate and the savings prompt caching delivers.
         """
         with self._counter_lock:
             self._token_totals["prompt"]     += prompt_tokens
@@ -396,15 +450,17 @@ class LLMClient:
             self._token_totals["calls"]      += 1
             self._token_totals["cost_usd"]   += cost_usd
             self._token_totals["latency_ms"] += latency_ms
+            self._token_totals["cached"]     += cached_tokens
             if truncated:
                 self._token_totals["truncated_calls"] += 1
             self._models_used[model] = self._models_used.get(model, 0) + 1
             st = self._stage_totals.setdefault(
-                stage or "unknown", {"calls": 0, "total_tokens": 0, "cost_usd": 0.0}
+                stage or "unknown", {"calls": 0, "total_tokens": 0, "cost_usd": 0.0, "cached": 0}
             )
             st["calls"]        += 1
             st["total_tokens"] += prompt_tokens + completion_tokens
             st["cost_usd"]     += cost_usd
+            st["cached"]        = st.get("cached", 0) + cached_tokens
 
     def record_external_usage(
         self, model: str, prompt_tokens: int, completion_tokens: int,

@@ -24,6 +24,10 @@ from core.models import (
     ApplicationType, ConnectTestRequest, PreviewRequest, RunConfig,
 )
 from core.adapters.chatbot import ChatbotAdapter
+from core.nia_agent import (
+    apply_nia_agent_config, nia_request_template,
+    NIA_A2A_REQUEST_FIELD, NIA_A2A_RESPONSE_FIELD, NIA_A2A_RESPONSE_TRIM_MARKER,
+)
 from core import db as _db
 from pipeline import run_pipeline
 from stages.s0_profile.architecture_parser import parse_architecture_text, parse_architecture_image
@@ -208,15 +212,20 @@ async def get_tools_status():
 # ──────────────────────────────────────────────────────────────────────────
 @app.post("/api/connect-test")
 async def connect_test(req: ConnectTestRequest, request: Request):
-    get_current_user(request)
+    user = get_current_user(request)
+    # NIA agent mode: only endpoint_url comes from the UI; the A2A template,
+    # response path and trim marker are fixed server-side, and the caller's JWT
+    # (from the Authorization header) is injected into the request body. This
+    # exercises the exact same path a real run uses.
     adapter = ChatbotAdapter(
         endpoint_url=req.endpoint_url,
-        request_field=req.request_field,
-        response_field=req.response_field,
-        auth_type=req.auth_type,
-        auth_token=req.auth_token,
-        request_template=req.request_template,
-        response_trim_marker=req.response_trim_marker,
+        request_field=NIA_A2A_REQUEST_FIELD,
+        response_field=NIA_A2A_RESPONSE_FIELD,
+        auth_type="none",
+        auth_token="",
+        request_template=nia_request_template(),
+        response_trim_marker=NIA_A2A_RESPONSE_TRIM_MARKER,
+        injected_token=user.get("access_token", ""),
     )
     success, message = await adapter.test_connection()
     return {"success": success, "message": message}
@@ -470,6 +479,11 @@ async def run_tests(
     run_config = RunConfig(**config_data)
     # Org id from the JWT selects this org's LLM config from the NIA DB (per-org).
     run_config.organization_id = user.get("organization_id", "")
+
+    # NIA agent mode: the target adapter config is fixed server-side (not from the
+    # UI) and the caller's JWT is forwarded into the A2A request body. Overrides
+    # whatever the client sent for endpoint template / response path / auth.
+    apply_nia_agent_config(run_config, user.get("access_token", ""))
 
     if not _has_credentials(run_config):
         raise HTTPException(400, "No LLM configured: set up this org in the NIA DB, or set LLM_MODEL / LLM_API_KEY")

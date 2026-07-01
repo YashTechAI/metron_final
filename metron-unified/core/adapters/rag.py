@@ -32,6 +32,7 @@ class RAGAdapter:
         timeout:              int = 30,
         request_template:     Optional[str] = None,
         response_trim_marker: Optional[str] = None,
+        injected_token:       str = "",
     ):
         self.endpoint_url         = endpoint_url
         self.request_field        = request_field
@@ -40,6 +41,8 @@ class RAGAdapter:
         self.timeout              = timeout
         self.request_template     = request_template
         self.response_trim_marker = response_trim_marker
+        # Server-set caller JWT for {{token}} in the request template (NIA A2A mode).
+        self.injected_token       = injected_token
         self.headers: Dict[str, str] = {"Content-Type": "application/json"}
         if auth_type == "bearer" and auth_token:
             self.headers["Authorization"] = f"Bearer {auth_token}"
@@ -52,6 +55,7 @@ class RAGAdapter:
                 .replace("{{query}}", escaped)
                 .replace("{{uuid}}", str(_uuid_mod.uuid4()))
                 .replace("{{conversation_id}}", conversation_id or str(_uuid_mod.uuid4()))
+                .replace("{{token}}", self.injected_token or "")
             )
             return json.loads(body_str)
         return {self.request_field: message}

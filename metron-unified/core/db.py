@@ -44,6 +44,10 @@ def _get_pool() -> ThreadedConnectionPool:
                 dbname=os.environ.get("DB_NAME", "postgres"),
                 sslmode="require",
                 cursor_factory=RealDictCursor,
+                # Fail fast on lock waits, and have the server auto-clear any
+                # leaked 'idle in transaction' session so a stale connection can
+                # never block startup DDL for minutes again.
+                options="-c lock_timeout=8000 -c idle_in_transaction_session_timeout=60000",
             )
     return _pool
 
@@ -54,8 +58,20 @@ def _connect():
 
 
 def _put(conn) -> None:
-    """Return a connection to the pool."""
+    """Return a connection to the pool.
+
+    Roll back first so a connection is never returned with an open transaction.
+    Read paths (e.g. load_recent_jobs) don't commit, which would otherwise leave
+    the pooled connection 'idle in transaction' holding an ACCESS SHARE lock on
+    the table. That lock conflicts with the ACCESS EXCLUSIVE lock the startup
+    ALTER TABLE migrations need, blocking startup until statement_timeout fires.
+    rollback() is a harmless no-op after a commit().
+    """
     if conn is not None:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
         _get_pool().putconn(conn)
 
 

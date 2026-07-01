@@ -112,10 +112,11 @@ directly by the pipeline:
 
 ### API surface
 
-[fastapi_server.py](metron-unified/fastapi_server.py) — ~20 endpoints under
+[fastapi_server.py](metron-unified/fastapi_server.py) — ~18 endpoints under
 `/api/*`. Key ones: `POST /api/run` (kicks off the pipeline),
 `GET /api/job/{run_id}/status` and `/results` (frontend polls these),
-`/api/parse-document`, `/api/preview`, `/api/projects`. Jobs live in an in-memory
+`/api/extract-document` + `/api/parse-architecture` (seed-doc ingestion),
+`/api/preview`, `/api/projects`. Jobs live in an in-memory
 `jobs` dict; completed runs persist to Postgres.
 
 ## Frontend architecture (`metron-ai/`)
@@ -145,11 +146,10 @@ python setup_models.py          # pre-downloads detoxify / sentence-transformers
 # run the API (from inside metron-unified/)
 uvicorn fastapi_server:app --reload --port 8000
 
-# tests (pytest)
+# tests (pytest) — the backend suite is currently a single file
 pytest                          # all
 pytest tests/test_multiturn_chaining.py            # one file
 pytest tests/test_multiturn_chaining.py::test_name # one test
-python test_auth.py             # standalone auth smoke check (not pytest)
 ```
 
 ### Frontend (`metron-ai/`)

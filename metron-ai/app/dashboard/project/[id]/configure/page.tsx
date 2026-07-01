@@ -24,12 +24,9 @@ export default function ConfigurePage() {
 
   // Pre-populated from dashboard modal
   const [endpointUrl, setEndpointUrl] = useState("");
-  const [requestField, setRequestField] = useState("message");
-  const [responseField, setResponseField] = useState("response");
-  const [authType, setAuthType] = useState<"none" | "bearer">("none");
-  const [authToken, setAuthToken] = useState("");
-  const [requestTemplate, setRequestTemplate] = useState("");
-  const [responseTrimMarker, setResponseTrimMarker] = useState("");
+  // Target request/response format, trim marker and auth are fixed server-side for
+  // NIA agents (the caller's token is injected from the request header), so they are
+  // no longer entered here.
   const [notifyEmail, setNotifyEmail] = useState(false);
   const [connectionStatus, setConnectionStatus] = useState<"idle" | "testing" | "ok" | "fail">("idle");
   const [connectionMsg, setConnectionMsg] = useState("");
@@ -148,15 +145,7 @@ export default function ConfigurePage() {
       const res = await authFetch(`${API}/api/connect-test`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          endpoint_url: endpointUrl,
-          request_field: requestField,
-          response_field: responseField,
-          auth_type: authType,
-          auth_token: authToken,
-          request_template: requestTemplate || null,
-          response_trim_marker: responseTrimMarker || null,
-        }),
+        body: JSON.stringify({ endpoint_url: endpointUrl }),
       });
       const data = await res.json();
       setConnectionStatus(data.success ? "ok" : "fail");
@@ -235,12 +224,6 @@ export default function ConfigurePage() {
     const fullConfig = {
       project_id: projectId,
       endpoint_url: endpointUrl,
-      request_field: requestField,
-      response_field: responseField,
-      auth_type: authType,
-      auth_token: authToken,
-      request_template: requestTemplate || null,
-      response_trim_marker: responseTrimMarker || null,
       agent_name: agentName,
       agent_domain: agentDomain,
       is_rag: isRag,
@@ -376,48 +359,11 @@ export default function ConfigurePage() {
                 onChange={(e) => setEndpointUrl(e.target.value)}
               />
             </Field>
-            <Field label="Request Field">
-              <input className="input-field" placeholder="message" value={requestField} onChange={(e) => setRequestField(e.target.value)} />
-              <p className="text-[10px] text-[var(--color-on-surface-variant)] opacity-50 mt-1">Ignored when Request Template is set.</p>
-            </Field>
-            <Field label="Response Field (dot-notation)">
-              <input className="input-field" placeholder="response  or  result.artifacts.0.parts.0.text" value={responseField} onChange={(e) => setResponseField(e.target.value)} />
-            </Field>
-            <Field label="Request Template (optional — for complex APIs)">
-              <textarea
-                className="input-field resize-none h-[110px] font-mono text-xs"
-                placeholder={'{\n  "id": "{{uuid}}",\n  "message": "{{query}}",\n  "sessionId": "{{conversation_id}}"\n}'}
-                value={requestTemplate}
-                onChange={(e) => setRequestTemplate(e.target.value)}
-              />
-              <p className="text-[10px] text-[var(--color-on-surface-variant)] opacity-50 mt-1">
-                Full JSON body. Use <code>{"{{query}}"}</code> for the message, <code>{"{{uuid}}"}</code> for a per-request UUID, <code>{"{{conversation_id}}"}</code> for a per-conversation UUID (stable across multi-turn).
-              </p>
-            </Field>
-            <Field label="Response Trim Marker (optional)">
-              <input
-                className="input-field font-mono text-xs"
-                placeholder="FOLLOW UP QUESTIONS"
-                value={responseTrimMarker}
-                onChange={(e) => setResponseTrimMarker(e.target.value)}
-              />
-              <p className="text-[10px] text-[var(--color-on-surface-variant)] opacity-50 mt-1">
-                Text at or after this marker is stripped from every response before evaluation.
-              </p>
-            </Field>
+            <p className="text-[10px] text-[var(--color-on-surface-variant)] opacity-50 mt-1">
+              Request format, response parsing, trim marker and authentication are preconfigured for NIA agents.
+            </p>
           </div>
           <div className="space-y-4">
-            <Field label="Authentication">
-              <select className="input-field" aria-label="Authentication" value={authType} onChange={(e) => setAuthType(e.target.value as "none" | "bearer")}>
-                <option value="none">None</option>
-                <option value="bearer">Bearer Token</option>
-              </select>
-            </Field>
-            {authType === "bearer" && (
-              <Field label="Bearer Token">
-                <input className="input-field" type="password" placeholder="••••••••" value={authToken} onChange={(e) => setAuthToken(e.target.value)} />
-              </Field>
-            )}
             <div className="pt-2">
               <button
                 onClick={testConnection}

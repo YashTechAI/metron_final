@@ -140,7 +140,7 @@ interface LoadMetrics {
 }
 
 
-interface StageTotals { calls: number; total_tokens: number; cost_usd: number; }
+interface StageTotals { calls: number; total_tokens: number; cost_usd: number; cached?: number; }
 interface TokenSummary {
   total_calls: number;
   total_prompt_tokens: number;
@@ -154,6 +154,8 @@ interface TokenSummary {
   retry_count: number;
   truncated_calls: number;
   truncation_rate: number;
+  cached_tokens?: number;
+  cache_hit_rate?: number;
   models_used: Record<string, number>;
   by_stage: Record<string, StageTotals>;
   mlflow_run_id?: string;
@@ -1595,6 +1597,7 @@ function LLMOpsTab({ data }: { data: TokenSummary | null }) {
     total_calls, total_prompt_tokens, total_completion_tokens, total_tokens,
     avg_latency_ms, tpot_ms = 0, token_efficiency_ratio = 0, tpm_velocity = 0,
     retry_count = 0, truncated_calls = 0, truncation_rate = 0,
+    cached_tokens = 0, cache_hit_rate = 0,
     models_used = {}, by_stage,
   } = data;
 
@@ -1652,8 +1655,8 @@ function LLMOpsTab({ data }: { data: TokenSummary | null }) {
 
       {/* Row 3 — Reliability */}
       <div>
-        <p className="text-xs font-bold uppercase tracking-widest text-[var(--color-on-surface-variant)] opacity-60 mb-3">Reliability</p>
-        <div className="grid grid-cols-2 gap-4">
+        <p className="text-xs font-bold uppercase tracking-widest text-[var(--color-on-surface-variant)] opacity-60 mb-3">Reliability &amp; Caching</p>
+        <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
           <div className="p-4 rounded-xl bg-[var(--color-surface-container-low)] flex items-center gap-4">
             <span className="material-symbols-outlined text-3xl text-[var(--color-on-surface-variant)] opacity-40">content_cut</span>
             <div>
@@ -1673,6 +1676,18 @@ function LLMOpsTab({ data }: { data: TokenSummary | null }) {
               <p className="text-[11px] text-[var(--color-on-surface-variant)] opacity-40 mt-0.5">Rate-limit backoffs + timeout retries</p>
             </div>
           </div>
+          <div className="p-4 rounded-xl bg-[var(--color-surface-container-low)] flex items-center gap-4"
+               title="Prompt tokens served from the provider's cache (e.g. the repeated failure taxonomy). Cached input is billed up to ~90% cheaper.">
+            <span className="material-symbols-outlined text-3xl text-[#1a7a4a] opacity-50">bolt</span>
+            <div>
+              <p className="font-headline text-xl font-black text-[#1a7a4a]">
+                {(cache_hit_rate * 100).toFixed(1)}%
+                <span className="text-sm font-normal opacity-60 ml-1">({cached_tokens.toLocaleString()} tok)</span>
+              </p>
+              <p className="text-xs text-[var(--color-on-surface-variant)] opacity-60">Prompt Cache Hit Rate</p>
+              <p className="text-[11px] text-[var(--color-on-surface-variant)] opacity-40 mt-0.5">Cached input tokens — billed up to ~90% cheaper</p>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -1683,21 +1698,38 @@ function LLMOpsTab({ data }: { data: TokenSummary | null }) {
           <div className="space-y-2">
             {stageEntries.map(([stage, s]) => {
               const barPct = Math.round((s.total_tokens / maxStageTokens) * 100);
+              const stageCached = s.cached ?? 0;
+              // Cached fraction drawn on the SAME scale as the bar (cached ⊆ this stage's tokens).
+              const cachedPct = Math.round((stageCached / maxStageTokens) * 100);
               return (
                 <div key={stage} className="flex items-center gap-3">
                   <span className="text-xs font-mono w-24 shrink-0 text-[var(--color-on-surface-variant)]">
                     {STAGE_LABELS[stage as keyof typeof STAGE_LABELS] ?? stage}
                   </span>
-                  <div className="flex-1 h-5 rounded-full bg-[var(--color-surface-container-low)] overflow-hidden">
+                  <div className="flex-1 h-5 rounded-full bg-[var(--color-surface-container-low)] overflow-hidden relative">
                     <ProgressFill pct={barPct} className="h-full rounded-full bg-primary opacity-70 transition-all" />
+                    {stageCached > 0 && (
+                      <ProgressFill pct={cachedPct} className="absolute left-0 top-0 h-full rounded-full bg-[#1a7a4a] opacity-90 transition-all" />
+                    )}
                   </div>
-                  <span className="text-xs text-[var(--color-on-surface-variant)] opacity-70 w-40 shrink-0 text-right">
-                    {s.calls} calls · {s.total_tokens.toLocaleString()} tokens
-                  </span>
+                  <div className="w-44 shrink-0 text-right leading-tight">
+                    <span className="text-xs text-[var(--color-on-surface-variant)] opacity-70">
+                      {s.calls} calls · {s.total_tokens.toLocaleString()} tok
+                    </span>
+                    {stageCached > 0 && (
+                      <span className="block text-[10px] text-[#1a7a4a] opacity-90">
+                        {stageCached.toLocaleString()} cached ({Math.round((stageCached / s.total_tokens) * 100)}%)
+                      </span>
+                    )}
+                  </div>
                 </div>
               );
             })}
           </div>
+          <p className="text-[10px] text-[var(--color-on-surface-variant)] opacity-40">
+            <span className="inline-block w-2 h-2 rounded-full bg-[#1a7a4a] align-middle mr-1" />
+            Green = prompt tokens served from cache (billed up to ~90% cheaper)
+          </p>
         </div>
       )}
 
