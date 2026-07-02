@@ -44,16 +44,16 @@ _USER_TAXONOMY_BLOCK = "TAXONOMY REFERENCE — assign the most specific match fo
 
 _INDIAN_NAMES: List[str] = [
     # North Indian
-    "Aarav Sharma", "Siddharth Yadav", "Akash Verma", "Amit Joshi", "Amrita Singh",
-    "Anil Chandra", "Anita Bhatia", "Ankur Saxena", "Aparna Shukla", "Aryan Kapoor",
-    "Ashish Pandey", "Vaibhav Pandya", "Deepak Malhotra", "Deepika Chauhan", "Gaurav Yadav",
-    "Himanshu Rawat", "Isha Khanna", "Kabir Mehta", "Kavya Srivastava", "Kiran Pathak",
-    "Lalit Kumar", "Manish Tripathi", "Meena Rajput", "Mohit Agarwal", "Monu Mishra",
-    "Naveen Dubey", "Nidhi Khatri", "Nikhil Bansal", "Pallavi Dixit", "Pankaj Bajpai",
-    "Pooja Tomar", "Prateek Arora", "Shivani Chauhan", "Rahul Bhatt", "Rakesh Negi",
-    "Ritesh Rana", "Rohini Sinha", "Sandeep Chaudhary", "Sanjay Upadhyay", "Sarita Devi",
+    "Aarav Sharma", "Siddharth Yadav", "Akash Verma", "Lakshya Dubey", "Amrita Singh",
+    "Amit Sharma", "Anita Bhatia", "Ankur Saxena", "Aparna Shukla", "Aryan Kapoor",
+    "Ashish Pandey", "Vaibhav Pandya", "Deepak Malhotra", "Mahendra Singh", "Gaurav Yadav",
+    "Himanshu Rawat", "Isha Khanna", "Kabir Mehta", "Ashwin Choubey", "Kiran Pathak",
+    "Lalit Kumar", "Manish Tripathi", "Meena Rajput", "Sanket Upadhyay", "Shivam Tripathi",
+    "Naveen Dubey", "Ronak Singh", "Nikhil Bansal", "Pallavi Dixit", "Pankaj Bajpai",
+    "Mehul Vyas", "Prateek Arora", "Rahul Singh", "Rahul Bhatt", "Ayush Joshi",
+    "Ritesh Rana", "Rohini Sinha", "Madhur Dubey", "Sanjay Upadhyay", "Sarita Devi",
     "Shikha Aggarwal", "Shubham Thakur", "Sonali Jain", "Suresh Goyal", "Swati Kulshrestha",
-    "Tarun Garg", "Usha Rani", "Adarsh Singh", "Vikash Mourya", "Vinita Lal",
+    "Tarun Garg", "Divyaant Jain", "Adarsh Singh", "Vikash Mourya", "Vinita Lal",
     # South Indian
     "Aishwarya Krishnan", "Anand Subramanian", "Anjali Pillai", "Balaji Rajan", "Bhavana Nair",
     "Chandrasekhar Iyengar", "Deepa Menon", "Divya Venkatesh", "Geetha Narayanan", "Harish Reddy",

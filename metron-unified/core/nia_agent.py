@@ -60,7 +60,7 @@ NIA_A2A_RESPONSE_TRIM_MARKER = "FOLLOW UP QUESTIONS"
 NIA_A2A_REQUEST_FIELD = "message"
 
 # Default team_id = the current agent under test. Override per deployment via env.
-_DEFAULT_TEAM_ID = "9239662f-57ff-4a9c-8c9d-fdf06ff0121a"
+_DEFAULT_TEAM_ID = "8c0f026c-7fc9-48ee-b685-8a451cb01b47"
 
 
 def _team_id() -> str:

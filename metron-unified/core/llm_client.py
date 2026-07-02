@@ -10,6 +10,7 @@ Combines:
 from __future__ import annotations
 import asyncio
 import json
+import logging
 import os
 import random
 import re
@@ -25,8 +26,9 @@ from .config import (
     get_llm_model, get_llm_api_key, provider_from_model, apply_llm_env,
 )
 
-litellm.set_verbose = True
-litellm._turn_on_debug()
+# litellm logging at INFO level (was DEBUG/verbose — too noisy and can leak prompts).
+litellm.set_verbose = False
+logging.getLogger("LiteLLM").setLevel(logging.INFO)
 
 
 # ── Rate Limiter ───────────────────────────────────────────────────────────
